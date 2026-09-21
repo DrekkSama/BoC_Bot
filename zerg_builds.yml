@@ -87,7 +87,8 @@ Builds:
             - 18 extractor
             - 17 spawningpool
             - 21 overlord
-            - 21 queen x2
+            - 21 queen
+            - 21 queen
             - 26 ZERGLINGMOVEMENTSPEED
             - 29 zergling x4
             - 31 hatchery
@@ -107,17 +108,27 @@ Builds:
     Pig_Hatch_Firs_5.0.16:
         ConstantWorkerProductionTill: 44
         ShouldHandleGasSteal: False
-        AutoSupplyAtSupply: 28
+        AutoSupplyAtSupply: 21
         OpeningBuildOrder:
+            - 9 overlord_scout:
+                  [enemy_ramp]
             - 12 overlord
             - 13 hatchery
-            - 13 extractor
-            - 13 spawningpool
-            - 18 queen x2
-            - 23 zergling x4
-            - 24 overlord x2
-            - 30 queen
+            - 16 spawningpool
+            - 18 extractor
+            - 18 overlord
+            - 18 queen
+            - 18 queen
+            - 22 zergling
+            - 22 zergling
+            - 24 ZERGLINGMOVEMENTSPEED
+            - 31 queen
             - 40 extractor x2
             - 42 roachwarren
             - 48 hatchery
+            - 52 roach
+            - 52 roach
+            - 52 roach
+            - 52 roach
+            - 52 roach
         
