@@ -9,19 +9,11 @@
 # Limitations: No nydus queen support, no offensive queen mode yet
 
 import numpy as np
-from ares.cache import property_cache_once_per_frame
-from ares.consts import UnitRole
-from cython_extensions import cy_closest_to, cy_distance_to, cy_in_attack_range, cy_pick_enemy_target
-from sc2.ids.ability_id import AbilityId
-from sc2.ids.buff_id import BuffId
-from sc2.ids.unit_typeid import UnitTypeId as UnitID
-from sc2.position import Point2
-from sc2.unit import Unit
-from sc2.units import Units
-
 from ares import AresBot
 from ares.behaviors.combat import CombatManeuver
 from ares.behaviors.combat.individual import (
+    AMove,
+    KeepUnitSafe,
     PathUnitToTarget,
     QueenSpreadCreep,
     ShootTargetInRange,
@@ -29,6 +21,15 @@ from ares.behaviors.combat.individual import (
     TumorSpreadCreep,
     UseTransfuse,
 )
+from ares.cache import property_cache_once_per_frame
+from ares.consts import UnitRole
+from cython_extensions import cy_closest_to, cy_distance_to, cy_in_attack_range
+from sc2.ids.ability_id import AbilityId
+from sc2.ids.buff_id import BuffId
+from sc2.ids.unit_typeid import UnitTypeId as UnitID
+from sc2.position import Point2
+from sc2.unit import Unit
+from sc2.units import Units
 
 # ── Constants ────────────────────────────────────────────────────────────────
 QUEEN_INJECT_ENERGY: float = 25.0
@@ -111,12 +112,8 @@ class QueenManager:
         self._assign_base_defenders(creep_queens, defending_queens)
 
         # Re-fetch after role adjustments (roles may have changed)
-        inject_queens = self.ai.mediator.get_units_from_role(
-            role=UnitRole.QUEEN_INJECT
-        )
-        creep_queens = self.ai.mediator.get_units_from_role(
-            role=UnitRole.QUEEN_CREEP
-        )
+        inject_queens = self.ai.mediator.get_units_from_role(role=UnitRole.QUEEN_INJECT)
+        creep_queens = self.ai.mediator.get_units_from_role(role=UnitRole.QUEEN_CREEP)
         defending_queens = self.ai.mediator.get_units_from_role(
             role=UnitRole.DEFENDING, unit_type=UnitID.QUEEN
         )
@@ -187,9 +184,7 @@ class QueenManager:
 
     # ── Role Management ─────────────────────────────────────────────────────
 
-    def _manage_inject_role(
-        self, creep_queens: Units, inject_queens: Units
-    ) -> None:
+    def _manage_inject_role(self, creep_queens: Units, inject_queens: Units) -> None:
         """Assign/unassign inject queens based on game state.
 
         Steal from creep queens if we need more injectors.
@@ -202,18 +197,15 @@ class QueenManager:
             # Find a townhall that doesn't have an inject queen yet
             th_tags_taken: set[int] = set(self._inject_queen_to_th.values())
             available_ths: list[Unit] = [
-                th for th in self.ai.townhalls
+                th
+                for th in self.ai.townhalls
                 if th.build_progress > 0.95 and th.tag not in th_tags_taken
             ]
             if available_ths:
                 queen: Unit = creep_queens[0]
                 # Pick closest townhall to this queen
-                closest_th: Unit = cy_closest_to(
-                    queen.position, available_ths
-                )
-                self.ai.mediator.assign_role(
-                    tag=queen.tag, role=UnitRole.QUEEN_INJECT
-                )
+                closest_th: Unit = cy_closest_to(queen.position, available_ths)
+                self.ai.mediator.assign_role(tag=queen.tag, role=UnitRole.QUEEN_INJECT)
                 self._inject_queen_to_th[queen.tag] = closest_th.tag
 
         # Unassign: too many injectors → return to creep
@@ -226,15 +218,11 @@ class QueenManager:
 
         # Clean up stale mappings (queen died or role changed)
         active_tags: set[int] = {q.tag for q in inject_queens}
-        stale: list[int] = [
-            t for t in self._inject_queen_to_th if t not in active_tags
-        ]
+        stale: list[int] = [t for t in self._inject_queen_to_th if t not in active_tags]
         for tag in stale:
             del self._inject_queen_to_th[tag]
 
-    def _manage_creep_role(
-        self, creep_queens: Units, inject_queens: Units
-    ) -> None:
+    def _manage_creep_role(self, creep_queens: Units, inject_queens: Units) -> None:
         """Assign/unassign creep spreaders based on game state.
 
         Only steal from inject pool if we have excess injectors.
@@ -278,21 +266,18 @@ class QueenManager:
             if assigned_th is None:
                 th_tags_taken: set[int] = set(self._inject_queen_to_th.values())
                 available_ths: list[Unit] = [
-                    th for th in self.ai.townhalls
+                    th
+                    for th in self.ai.townhalls
                     if th.build_progress > 0.95 and th.tag not in th_tags_taken
                 ]
                 if available_ths:
-                    new_th: Unit = cy_closest_to(
-                        queen.position, available_ths
-                    )
+                    new_th: Unit = cy_closest_to(queen.position, available_ths)
                     self._inject_queen_to_th[queen.tag] = new_th.tag
                     assigned_th = new_th
                 else:
                     # No available TH, move to closest existing TH
                     if self.ai.townhalls:
-                        assigned_th = cy_closest_to(
-                            queen.position, self.ai.townhalls
-                        )
+                        assigned_th = cy_closest_to(queen.position, self.ai.townhalls)
 
             if assigned_th is None:
                 continue
@@ -326,9 +311,7 @@ class QueenManager:
             has_surplus: bool = queen.energy >= INJECT_SURPLUS_FOR_CREEP
             if has_surplus and not th_needs_inject:
                 maneuver = CombatManeuver()
-                maneuver.add(
-                    QueenSpreadCreep(unit=queen, cancel_if_close_enemy=True)
-                )
+                maneuver.add(QueenSpreadCreep(unit=queen, cancel_if_close_enemy=True))
                 self.ai.register_behavior(maneuver)
                 continue
 
@@ -337,9 +320,7 @@ class QueenManager:
             if dist > INJECT_RANGE:
                 maneuver = CombatManeuver()
                 maneuver.add(
-                    PathUnitToTarget(
-                        unit=queen, grid=grid, target=assigned_th.position
-                    )
+                    PathUnitToTarget(unit=queen, grid=grid, target=assigned_th.position)
                 )
                 self.ai.register_behavior(maneuver)
 
@@ -361,8 +342,8 @@ class QueenManager:
 
             # Priority 1: Inject nearby un-injected townhall
             # Creep queens near a TH that needs inject should do it first
-            nearby_th_needing_inject: Unit | None = (
-                self._find_nearby_th_needing_inject(queen)
+            nearby_th_needing_inject: Unit | None = self._find_nearby_th_needing_inject(
+                queen
             )
             if nearby_th_needing_inject and queen.energy >= QUEEN_INJECT_ENERGY:
                 queen(AbilityId.EFFECT_INJECTLARVA, nearby_th_needing_inject)
@@ -375,15 +356,11 @@ class QueenManager:
             # Priority 3: Spread creep (with energy reservation for inject)
             # If near a TH that will need inject soon, reserve 25 energy
             near_injectable_th: bool = nearby_th_needing_inject is not None
-            energy_floor: float = (
-                QUEEN_INJECT_ENERGY if near_injectable_th else 0.0
-            )
+            energy_floor: float = QUEEN_INJECT_ENERGY if near_injectable_th else 0.0
             has_energy: bool = queen.energy >= CREEP_TUMOR_ENERGY + energy_floor
 
             if has_energy:
-                maneuver.add(
-                    QueenSpreadCreep(unit=queen, cancel_if_close_enemy=True)
-                )
+                maneuver.add(QueenSpreadCreep(unit=queen, cancel_if_close_enemy=True))
             else:
                 # Not enough energy: pre-move toward creep edge
                 maneuver.add(
@@ -416,7 +393,8 @@ class QueenManager:
 
         has_ground_threat: bool = (
             ground_threats
-            and self.ai.get_total_supply(ground_threats) >= DEFENCE_GROUND_SUPPLY_THRESHOLD
+            and self.ai.get_total_supply(ground_threats)
+            >= DEFENCE_GROUND_SUPPLY_THRESHOLD
         )
         has_air_threat: bool = (
             air_threats
@@ -456,15 +434,15 @@ class QueenManager:
                     )
                     self._defender_last_threat_time[closest_creep.tag] = self.ai.time
                     # Remove from local list so we don't pick the same queen twice
-                    creep_queens = creep_queens.filter(lambda q: q.tag != closest_creep.tag)
+                    creep_queens = creep_queens.filter(
+                        lambda q: q.tag != closest_creep.tag
+                    )
 
         # ── Return defenders to creep duty when threats clear ─────────
         else:
             queens_to_return: list[int] = []
             for queen in defending_queens:
-                last_threat: float = self._defender_last_threat_time.get(
-                    queen.tag, 0.0
-                )
+                last_threat: float = self._defender_last_threat_time.get(queen.tag, 0.0)
                 time_since_threat: float = self.ai.time - last_threat
                 if time_since_threat > DEFENCE_GRACE_PERIOD:
                     queens_to_return.append(queen.tag)
@@ -476,8 +454,7 @@ class QueenManager:
         # ── Clean up stale threat timestamps ──────────────────────────
         defender_tags: set[int] = {q.tag for q in defending_queens}
         stale_tags: list[int] = [
-            t for t in self._defender_last_threat_time
-            if t not in defender_tags
+            t for t in self._defender_last_threat_time if t not in defender_tags
         ]
         for tag in stale_tags:
             del self._defender_last_threat_time[tag]
@@ -497,7 +474,10 @@ class QueenManager:
                     break
             else:
                 for enemy in air_threats:
-                    if cy_distance_to(th.position, enemy.position) < DEFENCE_THREAT_RANGE:
+                    if (
+                        cy_distance_to(th.position, enemy.position)
+                        < DEFENCE_THREAT_RANGE
+                    ):
                         threatened.append(th)
                         break
         return threatened
@@ -507,10 +487,12 @@ class QueenManager:
     def _control_defending_queens(self, defending_queens: Units) -> None:
         """Defending queens: fight threats near bases, transfuse allies.
 
-        These are creep queens temporarily reassigned to DEFENDING role
-        when threats appear near bases. They use ARES combat behaviors
-        (StutterUnitBack, ShootTargetInRange) instead of raw attack
-        commands, and can transfuse injured friendlies.
+        Behavior chain: transfuse → AOE dodge (avoidance grid) →
+        weapon_ready branch: shoot in-range targets or advance when ready,
+        stutter back from the closest enemy on cooldown. StutterUnitBack
+        requires the ground (influence) grid — enemy unit positions add
+        retreat cost there; the avoidance grid only tracks spell effects
+        and would never trigger a retreat.
 
         When threats clear, _assign_base_defenders returns them to
         QUEEN_CREEP after a grace period.
@@ -518,7 +500,9 @@ class QueenManager:
         if not defending_queens:
             return
 
-        grid: np.ndarray = self.ai.mediator.get_ground_avoidance_grid
+        avoid_grid: np.ndarray = self.ai.mediator.get_ground_avoidance_grid
+        grid: np.ndarray = self.ai.mediator.get_ground_grid
+        enemies_near_base: Units = self._enemies_near_bases()
 
         for queen in defending_queens:
             maneuver: CombatManeuver = CombatManeuver()
@@ -527,22 +511,28 @@ class QueenManager:
             if queen.energy >= TRANSFUSE_ENERGY:
                 maneuver.add(UseTransfuse(unit=queen, targets=self.ai.all_own_units))
 
-            # Priority 2: Attack enemies near base
-            enemies_near_base: Units = self._enemies_near_bases()
+            # Priority 2: Dodge AOE effects (storms, biles, disruptors)
+            maneuver.add(KeepUnitSafe(unit=queen, grid=avoid_grid))
+
+            # Priority 3: Stutter-step fight when enemies are near a base
             if enemies_near_base:
-                if in_range := cy_in_attack_range(queen, enemies_near_base):
-                    maneuver.add(ShootTargetInRange(unit=queen, targets=in_range))
-                enemy_target: Unit = cy_pick_enemy_target(enemies_near_base)
-                maneuver.add(
-                    StutterUnitBack(unit=queen, target=enemy_target, grid=grid)
-                )
+                closest_enemy: Unit = cy_closest_to(queen.position, enemies_near_base)
+                if queen.weapon_ready:
+                    # Weapon ready: shoot best target in range, else advance
+                    if in_range := cy_in_attack_range(queen, enemies_near_base):
+                        maneuver.add(ShootTargetInRange(unit=queen, targets=in_range))
+                    else:
+                        maneuver.add(AMove(unit=queen, target=closest_enemy.position))
+                else:
+                    # Cooldown: stutter back from the closest enemy
+                    maneuver.add(
+                        StutterUnitBack(unit=queen, target=closest_enemy, grid=grid)
+                    )
             else:
                 # No immediate threats: move toward closest TH using ARES pathing
                 # (grace period in _assign_base_defenders handles return to creep)
                 if self.ai.townhalls:
-                    closest_th: Unit = cy_closest_to(
-                        queen.position, self.ai.townhalls
-                    )
+                    closest_th: Unit = cy_closest_to(queen.position, self.ai.townhalls)
                     dist_to_th: float = cy_distance_to(
                         queen.position, closest_th.position
                     )
@@ -590,7 +580,10 @@ class QueenManager:
         return None
 
     def _enemies_near_bases(self) -> Units:
-        """Get enemy units near any of our townhalls.
+        """Get visible enemy units near any of our townhalls.
+
+        Memory ghosts (last-seen fog positions) are excluded so queens
+        never stutter toward empty space.
 
         Perf note: O(bases * enemies_near_base) but typically 1-3 bases
         and <50 visible enemies, so fine.
@@ -602,7 +595,8 @@ class QueenManager:
                 DEFENCE_THREAT_RANGE, th.position
             )
             for unit in near_th:
-                if unit.tag not in seen_tags:
-                    result.append(unit)
-                    seen_tags.add(unit.tag)
+                if unit.is_memory or unit.tag in seen_tags:
+                    continue
+                result.append(unit)
+                seen_tags.add(unit.tag)
         return Units(result, self.ai)

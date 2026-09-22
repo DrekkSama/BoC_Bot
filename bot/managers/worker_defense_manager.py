@@ -1,19 +1,20 @@
 # Purpose: Pull the closest mining workers to defend against ARES-detected ling rushes
 # Key Decisions: Dual gate — get_enemy_ling_rushed latch AND live near-base threat.
 #   select_worker(force_close=True) picks miners closest to the incoming attack.
-#   Brawl micro (ShootTargetInRange -> AttackTarget): massed melee drones beat lings,
-#   kiting loses to faster lings. DEFENDING role + 5s grace mirrors QueenManager,
-#   preventing Mining recapture and GATHERING<->DEFENDING oscillation.
+#   Melee chain: AOE dodge (avoidance grid) -> attack in-range target -> advance.
+#   Massed melee drones beat lings; kiting loses to faster lings. DEFENDING role
+#   + 5s grace prevents Mining recapture and GATHERING<->DEFENDING oscillation.
 # Limitations: Ling rushes only (no roach/worker-rush pulls). Gas workers never
 #   pulled (select_worker limitation). Memory-ghost threats hold workers idle.
 
 import math
 
+import numpy as np
 from ares import AresBot
 from ares.behaviors.combat import CombatManeuver
-from ares.behaviors.combat.individual import AttackTarget, ShootTargetInRange
+from ares.behaviors.combat.individual import AMove, KeepUnitSafe, ShootTargetInRange
 from ares.consts import UnitRole
-from cython_extensions import cy_center, cy_in_attack_range, cy_pick_enemy_target
+from cython_extensions import cy_center, cy_closest_to, cy_in_attack_range
 from sc2.position import Point2
 from sc2.unit import Unit
 from sc2.units import Units
@@ -111,7 +112,7 @@ class WorkerDefenseManager:
             self._defender_last_threat_time[worker.tag] = self.ai.time
 
     def _control_defenders(self, defending: Units, threats: Units) -> None:
-        """Brawl micro: free hits on in-range enemies, then attack best target."""
+        """Melee micro chain: AOE dodge → attack in-range target → advance."""
         if not defending:
             return
         # Memory ghosts aren't real targets — never issue attacks on them
@@ -119,14 +120,19 @@ class WorkerDefenseManager:
         if not targets:
             return
 
+        avoid_grid: np.ndarray = self.ai.mediator.get_ground_avoidance_grid
+        grid: np.ndarray = self.ai.mediator.get_ground_grid
+
         # Perf note: per-worker loop, <=12 defenders at rush scale — trivial.
         for worker in defending:
             maneuver: CombatManeuver = CombatManeuver()
+            # AOE dodge (biles, storms) — first in every chain
+            maneuver.add(KeepUnitSafe(unit=worker, grid=avoid_grid))
             if in_range := cy_in_attack_range(worker, targets):
                 maneuver.add(ShootTargetInRange(unit=worker, targets=in_range))
-            maneuver.add(
-                AttackTarget(unit=worker, target=cy_pick_enemy_target(targets))
-            )
+            else:
+                closest: Unit = cy_closest_to(worker.position, targets)
+                maneuver.add(AMove(unit=worker, target=closest.position))
             self.ai.register_behavior(maneuver)
 
     def _release_workers(self, defending: Units) -> None:
