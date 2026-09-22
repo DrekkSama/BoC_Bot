@@ -17,32 +17,31 @@ from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.ability_id import AbilityId
 
 # ── Rush profiles (pre-5.0.16 starts with 12 workers, 5.0.16 with 8) ────────
+# All-in: lings attack-move the moment they pop from the pool. No wave gating.
 # 12_pool_zerg_rush:
 #   12  Spawning Pool
 #   14  Overlord / drones to 14
-#   14  Zergling x3 (waves stream as larvae allow)
+#   14  Zergling x3
 #   16  Hatchery (natural)
 #   18  Queen
-#   20  Zergling x2  → attack once the wave is complete
+#   20  Zergling x2
 # 8_pool_zerg_rush (same build shifted 4 supply down):
 #   8   Spawning Pool
 #   10  Overlord / drones to 10
 #   10  Zergling x3
 #   12  Hatchery (natural)
 #   14  Queen
-#   16  Zergling x2  → attack once the wave is complete
+#   16  Zergling x2
 RUSH_PROFILES: dict = {
     "12_pool_zerg_rush": {
         "drone_cap": 14,          # drone target once the pool has started
         "pool_min_workers": 11,   # pool ordered at game start (12 supply)
         "hatchery_supply": 16,    # expand to the natural (total supply used)
-        "attack_zerglings": 16,   # 8 pairs; attack-move when reached
     },
     "8_pool_zerg_rush": {
         "drone_cap": 10,
         "pool_min_workers": 8,
         "hatchery_supply": 12,
-        "attack_zerglings": 16,
     },
 }
 
@@ -178,9 +177,10 @@ class ZergTestBot(BotAI):
                 if larvae:
                     larvae.random.train(UnitTypeId.ZERGLING)
 
-        # Attack trigger: once the wave is complete, send everything
+        # All-in: every idle zergling attack-moves the moment it pops.
+        # Fresh lings stream to the front as soon as they hatch.
         zerglings = self.units(UnitTypeId.ZERGLING)
-        if zerglings.amount >= settings["attack_zerglings"]:
+        if zerglings:
             target = self._rush_target()
             for ling in zerglings.idle:
                 ling.attack(target)
