@@ -2,7 +2,7 @@
 # Key Decisions: Dual gate — get_enemy_ling_rushed latch AND live near-base threat.
 #   select_worker(force_close=True) picks miners closest to the incoming attack.
 #   Brawl micro (ShootTargetInRange -> AttackTarget): massed melee drones beat lings,
-#   kiting loses to faster lings. DEFENDING role + 3s grace mirrors QueenManager,
+#   kiting loses to faster lings. DEFENDING role + 5s grace mirrors QueenManager,
 #   preventing Mining recapture and GATHERING<->DEFENDING oscillation.
 # Limitations: Ling rushes only (no roach/worker-rush pulls). Gas workers never
 #   pulled (select_worker limitation). Memory-ghost threats hold workers idle.
@@ -28,7 +28,7 @@ MAX_WORKER_DEFENDERS: int = 12
 # Never leave fewer than this many workers on the mineral line
 MIN_GATHERING_RESERVE: int = 4
 # Grace period (game seconds) after threats clear before workers resume mining
-WORKER_DEFENCE_GRACE_PERIOD: float = 3.0
+WORKER_DEFENCE_GRACE_PERIOD: float = 5.0
 
 
 def worker_defender_count(threat_supply: float, gathering_count: int) -> int:
@@ -49,7 +49,7 @@ class WorkerDefenseManager:
 
     QueenManager defends with queens; this manager adds worker mass only when
     the ARES ling-rush detector has latched AND enemies are actually near one
-    of our townhalls. Workers return to mining 3s after threats clear.
+    of our townhalls. Workers return to mining 5s after threats clear.
     """
 
     def __init__(self, ai: AresBot) -> None:
@@ -130,7 +130,7 @@ class WorkerDefenseManager:
             self.ai.register_behavior(maneuver)
 
     def _release_workers(self, defending: Units) -> None:
-        """Return defenders to mining once threats have been clear for 3s."""
+        """Return defenders to mining once threats have been clear for 5s."""
         for worker in defending:
             last_threat: float = self._defender_last_threat_time.get(worker.tag, 0.0)
             if self.ai.time - last_threat > WORKER_DEFENCE_GRACE_PERIOD:
