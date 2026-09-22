@@ -108,18 +108,18 @@ Builds:
     Pig_Hatch_Firs_5.0.16:
         ConstantWorkerProductionTill: 44
         ShouldHandleGasSteal: False
-        AutoSupplyAtSupply: 21
+        AutoSupplyAtSupply: 24
         OpeningBuildOrder:
             - 9 overlord_scout:
                   [enemy_ramp]
+            - 12 hatchery
             - 12 overlord
-            - 13 hatchery
-            - 16 spawningpool
-            - 18 queen
-            - 18 queen
-            - 18 extractor
+            - 12 spawningpool
             - 18 zergling
-            - 19 overlord
+            - 18 queen
+            - 18 overlord
+            - 18 zergling
+            - 18 queen
             - 24 queen
             - 40 extractor x2
             - 40 roachwarren
