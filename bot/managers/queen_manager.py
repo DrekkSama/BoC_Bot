@@ -91,6 +91,8 @@ class QueenManager:
     def update(self) -> None:
         """Run every frame: adjust roles, then execute queen behaviors."""
         # Get queens by current role
+        # (DEFENDING filtered to queens: WorkerDefenseManager also assigns
+        #  drones to DEFENDING, which must not leak into queen logic)
         inject_queens: Units = self.ai.mediator.get_units_from_role(
             role=UnitRole.QUEEN_INJECT
         )
@@ -98,7 +100,7 @@ class QueenManager:
             role=UnitRole.QUEEN_CREEP
         )
         defending_queens: Units = self.ai.mediator.get_units_from_role(
-            role=UnitRole.DEFENDING
+            role=UnitRole.DEFENDING, unit_type=UnitID.QUEEN
         )
 
         # Adjust role assignments
@@ -116,7 +118,7 @@ class QueenManager:
             role=UnitRole.QUEEN_CREEP
         )
         defending_queens = self.ai.mediator.get_units_from_role(
-            role=UnitRole.DEFENDING
+            role=UnitRole.DEFENDING, unit_type=UnitID.QUEEN
         )
 
         # Execute behaviors per role

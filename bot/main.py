@@ -20,6 +20,7 @@ from sc2.data import Result
 from bot.combat import CombatManager
 from bot.managers.macro_manager import MacroManager
 from bot.managers.queen_manager import QueenManager
+from bot.managers.worker_defense_manager import WorkerDefenseManager
 from bot.utilities.game_report import TelemetryRecorder
 
 
@@ -77,6 +78,7 @@ class GLM_Bot(AresBot):
         self._queen_mgr: Optional[QueenManager] = None
         self._macro_mgr: Optional[MacroManager] = None
         self._telemetry: Optional[TelemetryRecorder] = None
+        self._worker_defense_mgr: Optional[WorkerDefenseManager] = None
 
     @property
     def attack_target(self) -> Point2:
@@ -92,6 +94,7 @@ class GLM_Bot(AresBot):
         self._queen_mgr = QueenManager(self)
         self._macro_mgr = MacroManager(self)
         self._telemetry = TelemetryRecorder(self)
+        self._worker_defense_mgr = WorkerDefenseManager(self)
 
     async def on_step(self, iteration: int) -> None:
         await super().on_step(iteration)
@@ -118,6 +121,10 @@ class GLM_Bot(AresBot):
         # ── Queen management (always run) ───────────────────────────────────
         if self._queen_mgr is not None:
             self._queen_mgr.update()
+
+        # ── Worker defense (pull closest miners vs ling rush) ─────────────
+        if self._worker_defense_mgr is not None:
+            self._worker_defense_mgr.update()
 
     async def on_end(self, game_result: Result) -> None:
         """Write game-summary telemetry, then defer to ARES."""
