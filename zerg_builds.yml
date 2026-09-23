@@ -106,19 +106,19 @@ Builds:
     # Notes: bank minerals on 18 supply for queens, lings scout/defend,
     # 4-5 safety roaches, 3rd base/tech switch at 48.
     Pig_Hatch_Firs_5.0.16:
-        ConstantWorkerProductionTill: 44
+        ConstantWorkerProductionTill: 16
         ShouldHandleGasSteal: False
         AutoSupplyAtSupply: 24
         OpeningBuildOrder:
-            - 9 overlord_scout:
+            - 8 overlord_scout:
                   [enemy_ramp]
             - 12 hatchery
             - 12 overlord
             - 12 spawningpool
-            - 18 zergling
             - 18 queen
             - 18 overlord
             - 18 queen
+            - 18 zergling
             - 18 zergling
             - 24 queen
             - 40 extractor x2
