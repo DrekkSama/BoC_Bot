@@ -29,7 +29,7 @@ MAX_WORKER_DEFENDERS: int = 12
 # Never leave fewer than this many workers on the mineral line
 MIN_GATHERING_RESERVE: int = 4
 # Grace period (game seconds) after threats clear before workers resume mining
-WORKER_DEFENCE_GRACE_PERIOD: float = 5.0
+WORKER_DEFENCE_GRACE_PERIOD: float = 7.0
 
 
 def worker_defender_count(threat_supply: float, gathering_count: int) -> int:
