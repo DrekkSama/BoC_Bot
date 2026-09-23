@@ -108,7 +108,10 @@ class QueenManager:
         self._manage_inject_role(creep_queens, inject_queens)
         self._manage_creep_role(creep_queens, inject_queens)
 
-        # Threat-response defense: steal creep queens when threats appear
+        # Threat-response defense: steal creep queens when threats appear.
+        # Re-fetch the pool first — threat gating in _required_injectors may
+        # have just demoted inject queens to creep this same frame.
+        creep_queens = self.ai.mediator.get_units_from_role(role=UnitRole.QUEEN_CREEP)
         self._assign_base_defenders(creep_queens, defending_queens)
 
         # Re-fetch after role adjustments (roles may have changed)
@@ -132,13 +135,21 @@ class QueenManager:
     def _required_injectors(self) -> int:
         """How many inject queens we need.
 
-        From the example: skip injects during rush or with very few queens.
+        Skip injects during rush or with very few queens.
         Otherwise, 1 per townhall that doesn't already have an inject queen.
         """
         num_queens: int = len(self.ai.mediator.get_own_army_dict[UnitID.QUEEN])
 
         # Don't inject during rush or with very few queens
         if self.ai.mediator.get_did_enemy_rush:
+            return 0
+        # Live threat near a base: stop injecting, release queens for defense
+        ground_threats: Units = self.ai.mediator.get_main_ground_threats_near_townhall
+        if (
+            ground_threats
+            and self.ai.get_total_supply(ground_threats)
+            >= DEFENCE_GROUND_SUPPLY_THRESHOLD
+        ):
             return 0
         if num_queens < MIN_QUEENS_FOR_SPECIALIZATION:
             return 0
