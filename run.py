@@ -17,7 +17,7 @@ sys.path.append("ares-sc2")
 
 import yaml
 
-from bot.main import GLM_Bot as MyBot
+from bot.main import Holdfast as MyBot
 from competitors.Zerg_Test_Bot import PATCH_RUSH_PROFILES, ZergTestBot
 from ladder import run_ladder_game
 

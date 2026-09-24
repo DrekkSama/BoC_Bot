@@ -69,7 +69,7 @@ IGNORE_ROLE_TYPES: set[UnitID] = {
 }
 
 
-class GLM_Bot(AresBot):
+class Holdfast(AresBot):
     """Zerg B2GM Roach Ravager bot using ARES framework."""
 
     def __init__(self, game_step_override: Optional[int] = None):
@@ -191,4 +191,4 @@ class GLM_Bot(AresBot):
 
 
 # Alias for run.py compatibility
-MicroBot = GLM_Bot
+MicroBot = Holdfast

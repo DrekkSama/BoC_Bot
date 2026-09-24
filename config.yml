@@ -3,7 +3,7 @@
 # Can add own unique config options here if desired
 
 # Set custom values here for your bot
-MyBotName: GLM_Bot
+MyBotName: Holdfast
 MyBotRace: Zerg
 # Local opponent: name from run.py LOCAL_OPPONENTS registry (e.g. ZergTestBot)
 # empty -> random Computer (AI) opponent
