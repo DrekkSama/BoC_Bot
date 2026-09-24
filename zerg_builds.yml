@@ -101,33 +101,48 @@ Builds:
             - 44 evolutionchamber
             - 47 overlord
 
-    # Pig's Hatch First (5.0.16) — extractor-trick variant, skipping the
-    # trick per note: plain 12 overlord, same output.
-    # Notes: bank minerals on 18 supply for queens, lings scout/defend,
-    # 4-5 safety roaches, 3rd base/tech switch at 48.
+    # Pig's Hatch First (5.0.16) — workers fully scripted (till 0).
+    # Pauses are omissions: bank 300 for natural (12), 150x2 for first
+    # queens (18), 300 for third base (33). Tech steps interleave with
+    # drone waves; AutoSupply (from 24) keeps overlords flowing.
+    # Post-build, MacroManager.BuildWorkers resumes droning to 66+.
     Pig_Hatch_Firs_5.0.16:
-        ConstantWorkerProductionTill: 16
+        ConstantWorkerProductionTill: 0
         ShouldHandleGasSteal: False
         AutoSupplyAtSupply: 24
         OpeningBuildOrder:
             - 8 overlord_scout:
                   [enemy_ramp]
-            - 12 hatchery
-            - 12 overlord
-            - 12 spawningpool
-            - 18 queen
+            # ladder to 12 workers
+            - 8 worker
+            - 9 worker
+            - 10 worker
+            - 11 worker
+            # bank 300 for natural
+            - 11 hatchery
+            - 11 worker
+            - 11 spawningpool
+            - 11 worker
+            - 11 overlord
+            # larva-paced ladder to 18 workers
+            - 10 worker x4
+            # bank 150 x2 for the first two queens
+            - 16 queen @nat
+            - 16 zergling
+            - 16 worker x2
+            - 16 queen
             - 18 overlord
-            - 18 queen
             - 18 zergling
-            - 18 zergling
-            - 24 queen
-            - 40 extractor x2
-            - 40 roachwarren
-            - 48 hatchery
-            - 48 ZERGLINGMOVEMENTSPEED
-            - 52 roach
-            - 52 roach
-            - 52 roach
-            - 52 roach
-            - 52 roach
+            - 20 queen
+            # resume droning, tech interleaved
+            - 20 worker x6
+            - 29 extractor x2
+            - 29 worker x3
+            - 30 roachwarren
+            - 32 worker
+            # bank 300 for third base
+            - 33 hatchery
+            - 32 worker x8
+            - 40 ZERGLINGMOVEMENTSPEED
+            - 40 roach x5
         
