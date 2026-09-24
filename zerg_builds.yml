@@ -128,11 +128,11 @@ Builds:
             - 10 worker x4
             # bank 150 x2 for the first two queens
             - 16 queen @nat
-            - 16 zergling
             - 16 worker x2
             - 16 queen
             - 18 overlord
-            - 18 zergling
+            - 18 zergling @nat
+            - 18 zergling @nat
             - 20 queen
             # resume droning, tech interleaved
             - 20 worker x6
