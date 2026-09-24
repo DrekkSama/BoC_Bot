@@ -13,14 +13,6 @@
 # Limitations: No nydus network support yet, no dynamic composition
 #   switching beyond air detection.
 
-from cython_extensions import cy_closest_to
-from cython_extensions import cy_unit_pending
-from sc2.ids.ability_id import AbilityId
-from sc2.ids.unit_typeid import UnitTypeId as UnitID
-from sc2.ids.upgrade_id import UpgradeId as UpgradeID
-from sc2.position import Point2
-from sc2.units import Units
-
 from ares import AresBot
 from ares.behaviors.macro import (
     AutoSupply,
@@ -33,6 +25,13 @@ from ares.behaviors.macro import (
     TechUp,
     UpgradeController,
 )
+from cython_extensions import cy_closest_to, cy_unit_pending
+from loguru import logger
+from sc2.ids.ability_id import AbilityId
+from sc2.ids.unit_typeid import UnitTypeId as UnitID
+from sc2.ids.upgrade_id import UpgradeId as UpgradeID
+from sc2.position import Point2
+from sc2.units import Units
 
 from bot.compositions import get_army_comp, should_morph, strip_morph_units
 
@@ -47,6 +46,10 @@ NATURAL_TIMING_THRESHOLD: float = 210.0  # 3:30
 DRONES_PER_SATURATED_BASE: int = 20
 DRONES_PER_FULLY_SATURATED_BASE: int = 22
 
+# Rush defense: minimum queens to target when a rush is detected
+# (two queens back the defense with transfuse + DPS)
+RUSH_DEFENSE_QUEENS: int = 2
+
 # Expansion phases: (min_drone_count, target_base_count)
 # max_pending is always 1 — never build two bases at once.
 # Phase 1: Opening (post-build) — 2 bases from build order, hold at 2
@@ -54,9 +57,9 @@ DRONES_PER_FULLY_SATURATED_BASE: int = 22
 # Phase 3: Mid-game — 4 bases once we have 44+ drones
 # Phase 4: Late-game — expand aggressively when economy is saturated
 EXPANSION_PHASES: list[tuple[int, int]] = [
-    (0, 2),    # Phase 1: hold at 2 bases (natural from build order)
-    (30, 3),   # Phase 2: take 3rd when 30+ drones
-    (44, 4),   # Phase 3: take 4th when 44+ drones
+    (0, 2),  # Phase 1: hold at 2 bases (natural from build order)
+    (30, 3),  # Phase 2: take 3rd when 30+ drones
+    (44, 4),  # Phase 3: take 4th when 44+ drones
     (60, 99),  # Phase 4: expand freely when 60+ drones
 ]
 
@@ -75,9 +78,9 @@ FREEFLOW_DRONE_THRESHOLD: int = 60
 # Phase 2: Mid-game — 1.5 gas per base (round up), supports upgrades + ravagers
 # Phase 3: Late-game — 2 gas per base, full saturation for hive tech
 GAS_PHASES: list[tuple[int, float, int]] = [
-    (0, 1.0, 1),    # Phase 1: 1 geyser per base
-    (36, 1.5, 2),   # Phase 2: 1.5 geysers per base (rounds up)
-    (56, 2.0, 2),   # Phase 3: 2 geysers per base
+    (0, 1.0, 1),  # Phase 1: 1 geyser per base
+    (36, 1.5, 2),  # Phase 2: 1.5 geysers per base (rounds up)
+    (56, 2.0, 2),  # Phase 3: 2 geysers per base
 ]
 
 # Upgrade priority order (lower = higher priority)
@@ -96,7 +99,9 @@ UPGRADE_PRIORITY: list[UpgradeID] = [
 
 # Air-detection structure types
 AIR_STRUCTURES: set[UnitID] = {
-    UnitID.FUSIONCORE, UnitID.STARGATE, UnitID.STARPORTTECHLAB,
+    UnitID.FUSIONCORE,
+    UnitID.STARGATE,
+    UnitID.STARPORTTECHLAB,
     UnitID.FLEETBEACON,
 }
 
@@ -104,23 +109,33 @@ AIR_STRUCTURES: set[UnitID] = {
 # Excludes non-combat air (Overlord, Overseer, Observer, WarpPrism)
 AIR_UNIT_TYPES: set[UnitID] = {
     # Protoss
-    UnitID.VOIDRAY, UnitID.CARRIER, UnitID.ORACLE, UnitID.PHOENIX,
-    UnitID.TEMPEST, UnitID.MOTHERSHIP,
+    UnitID.VOIDRAY,
+    UnitID.CARRIER,
+    UnitID.ORACLE,
+    UnitID.PHOENIX,
+    UnitID.TEMPEST,
+    UnitID.MOTHERSHIP,
     # Terran
-    UnitID.MEDIVAC, UnitID.VIKINGFIGHTER, UnitID.VIKINGASSAULT,
-    UnitID.BANSHEE, UnitID.RAVEN, UnitID.BATTLECRUISER, UnitID.LIBERATOR,
+    UnitID.MEDIVAC,
+    UnitID.VIKINGFIGHTER,
+    UnitID.VIKINGASSAULT,
+    UnitID.BANSHEE,
+    UnitID.RAVEN,
+    UnitID.BATTLECRUISER,
+    UnitID.LIBERATOR,
     # Zerg
-    UnitID.MUTALISK, UnitID.CORRUPTOR, UnitID.BROODLORD,
+    UnitID.MUTALISK,
+    UnitID.CORRUPTOR,
+    UnitID.BROODLORD,
 }
 
 # Light unit types for mass detection
 LIGHT_UNIT_TYPES: set[UnitID] = {
-    UnitID.ZERGLING, UnitID.ZEALOT, UnitID.ADEPT, UnitID.MARINE,
+    UnitID.ZERGLING,
+    UnitID.ZEALOT,
+    UnitID.ADEPT,
+    UnitID.MARINE,
 }
-
-# Queen production: target = ready bases + 1 extra queen
-# Under rush pressure, cap at bases (no extra) to save larvae/minerals
-QUEEN_RUSH_SUPPLY_THRESHOLD: float = 16.0
 
 # Response constants
 SAFETY_ROACH_COUNT: int = 5
@@ -135,6 +150,8 @@ class MacroManager:
         self._ai: AresBot = ai
         self._commenced_attack: bool = False
         self._air_signs_detected: bool = False  # Latches True once air threat seen
+        # Latches True once the rush reaction fired (build order aborted)
+        self._rush_reacted: bool = False
         self._threats: dict[str, bool] = {
             "no_natural": False,
             "timing_push": False,
@@ -185,6 +202,22 @@ class MacroManager:
         # during the opening build order.
         self._morph_units_standalone()
 
+        # Rush flag: latches once ARES detects an enemy rush. Mirrors the
+        # cheese reaction in PiGBot — abort the opening build order so
+        # dynamic macro (emergency queens, spines, army) takes over.
+        if (
+            not self._rush_reacted
+            and self._ai.mediator.get_did_enemy_rush
+            and not self._ai.build_order_runner.build_completed
+        ):
+            self._rush_reacted = True
+            self._threats["rush_detected"] = True
+            self._ai.build_order_runner.set_build_completed()
+            logger.info(
+                f"{self._ai.time_formatted}: Rush detected — aborting "
+                f"opening build order, switching to rush defense"
+            )
+
         # Failsafe: if build is still active but minerals are piling up,
         # force-complete the build so dynamic macro can take over
         if not self._ai.build_order_runner.build_completed:
@@ -222,17 +255,19 @@ class MacroManager:
             max_workers = min(max_workers, 30)
         idle_townhalls: bool = bool(self._ai.townhalls.idle)
         need_workers: bool = (
-            self._ai.supply_workers < WORKER_PRIORITY_THRESHOLD
-            or idle_townhalls
+            self._ai.supply_workers < WORKER_PRIORITY_THRESHOLD or idle_townhalls
         )
         if need_workers:
             macro_plan.add(BuildWorkers(to_count=max_workers))
 
         # Gas — phased based on drone count and base count
         target_gas, max_pending_gas = self._gas_targets()
-        macro_plan.add(GasBuildingController(
-            to_count=target_gas, max_pending=max_pending_gas,
-        ))
+        macro_plan.add(
+            GasBuildingController(
+                to_count=target_gas,
+                max_pending=max_pending_gas,
+            )
+        )
 
         # Spawning — use composition from compositions.py
         # Strip morph units (Ravager, Baneling) from SpawnController because
@@ -259,8 +294,7 @@ class MacroManager:
 
         # Tech — Lair when we have enough queens and gas
         lair_tech: bool = (
-            len(structure_dict[UnitID.LAIR]) > 0
-            or len(structure_dict[UnitID.HIVE]) > 0
+            len(structure_dict[UnitID.LAIR]) > 0 or len(structure_dict[UnitID.HIVE]) > 0
         )
         if (
             self._ai.vespene >= 100
@@ -291,7 +325,9 @@ class MacroManager:
 
         # Expansions — phased based on drone count and threat state
         target_bases, max_pending = self._expansion_targets()
-        macro_plan.add(ExpansionController(to_count=target_bases, max_pending=max_pending))
+        macro_plan.add(
+            ExpansionController(to_count=target_bases, max_pending=max_pending)
+        )
 
         self._ai.register_behavior(macro_plan)
 
@@ -338,8 +374,10 @@ class MacroManager:
     def _queen_target(self) -> int:
         """Determine target queen count: ready bases + 1 extra.
 
-        Under rush pressure with a small army, skip the extra queen
-        to conserve larvae and minerals for army units.
+        Under rush pressure the queen floor is RUSH_DEFENSE_QUEENS:
+        two queens are the backbone of the defense (transfuse + DPS),
+        so never target fewer — even with a single base.
+        Without a rush, target is bases + 1.
 
         Returns:
             Target number of queens we want to have (including pending).
@@ -351,12 +389,11 @@ class MacroManager:
         if base_count == 0:
             return 0
 
-        # Target: bases + 1, but under rush pressure cap at bases
-        target: int = base_count + 1
-        if self._threats.get("rush_detected", False) and ai.supply_army < QUEEN_RUSH_SUPPLY_THRESHOLD:
-            target = base_count
+        # Rush: ensure at least two queens exist for defense
+        if self._threats.get("rush_detected", False):
+            return max(RUSH_DEFENSE_QUEENS, base_count)
 
-        return target
+        return base_count + 1
 
     def _produce_queens(self) -> None:
         """Train a queen from an idle Hatch/Lair/Hive if we need more.
@@ -620,8 +657,10 @@ class MacroManager:
         # Only build when economy is ready (36+ drones) and Lair is up
         if (
             ai.supply_workers >= 36
-            and (ai.structures(UnitID.LAIR).ready.exists
-                 or ai.structures(UnitID.HIVE).ready.exists)
+            and (
+                ai.structures(UnitID.LAIR).ready.exists
+                or ai.structures(UnitID.HIVE).ready.exists
+            )
             and not ai.structures(UnitID.INFESTATIONPIT).exists
             and not ai.already_pending(UnitID.INFESTATIONPIT)
             and ai.can_afford(UnitID.INFESTATIONPIT)
@@ -651,7 +690,8 @@ class MacroManager:
         # No natural at 3:30
         if ai.time > NATURAL_TIMING_THRESHOLD:
             enemy_naturals: list = [
-                th for th in ai.enemy_structures
+                th
+                for th in ai.enemy_structures
                 if th.type_id in {UnitID.HATCHERY, UnitID.COMMANDCENTER, UnitID.NEXUS}
                 and 50 < th.distance_to(ai.enemy_start_locations[0]) < 200
             ]
@@ -686,7 +726,8 @@ class MacroManager:
 
         # Mass light units
         light_count: int = sum(
-            1 for u in ai.enemy_units
+            1
+            for u in ai.enemy_units
             if u.type_id in LIGHT_UNIT_TYPES and not u.is_memory
         )
         if light_count >= 10:
