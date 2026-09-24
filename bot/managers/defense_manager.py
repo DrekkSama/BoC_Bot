@@ -13,6 +13,8 @@ from cython_extensions import cy_center
 from sc2.position import Point2
 from sc2.units import Units
 
+from bot.managers.queen_manager import HARMLESS_THREAT_TYPES
+
 # ── Constants ────────────────────────────────────────────────────────────────
 # Near-base threat supply that flips the army to defensive
 UNDER_ATTACK_TRIGGER_SUPPLY: float = 4.0
@@ -75,6 +77,9 @@ class DefenseManager:
     def _collect_threats(self) -> Units:
         """All enemy units ARES tracks near our townhalls (ground + air).
 
+        Harmless units (overlords, observers, single scouts) are dropped so
+        the army only responds to real threats.
+
         Perf note: tag-set union + one tags_in lookup — O(tracked).
         """
         ground: dict[int, set[int]] = self.ai.mediator.get_ground_enemy_near_bases
@@ -88,4 +93,5 @@ class DefenseManager:
 
         if not all_tags:
             return Units([], self.ai)
-        return self.ai.enemy_units.tags_in(all_tags)
+        threats: Units = self.ai.enemy_units.tags_in(all_tags)
+        return threats.filter(lambda u: u.type_id not in HARMLESS_THREAT_TYPES)

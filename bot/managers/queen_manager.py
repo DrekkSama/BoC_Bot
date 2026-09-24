@@ -53,11 +53,19 @@ MAX_TUMORS: int = 25
 # Distance from townhall to detect threats for defense
 DEFENCE_THREAT_RANGE: float = 15.0
 # Supply threshold for ground threats to trigger queen defense
-DEFENCE_GROUND_SUPPLY_THRESHOLD: float = 3.0
+# 0.5 = a single zergling pulls queens — first responder for small threats
+DEFENCE_GROUND_SUPPLY_THRESHOLD: float = 0.5
 # Supply threshold for air threats to trigger queen defense
-DEFENCE_AIR_SUPPLY_THRESHOLD: float = 4.0
+DEFENCE_AIR_SUPPLY_THRESHOLD: float = 1.0
 # Max queens to pull for defense (don't pull all creep queens)
 MAX_DEFENDERS: int = 3
+# Units tracked near bases that pose no real threat (scouts, observers)
+HARMLESS_THREAT_TYPES: set[UnitID] = {
+    UnitID.OVERLORD,
+    UnitID.OVERSEER,
+    UnitID.OBSERVER,
+    UnitID.CHANGELING,
+}
 # Grace period (game seconds) before returning a defender to creep duty
 DEFENCE_GRACE_PERIOD: float = 5.0
 
@@ -144,11 +152,22 @@ class QueenManager:
         if self.ai.mediator.get_did_enemy_rush:
             return 0
         # Live threat near a base: stop injecting, release queens for defense
-        ground_threats: Units = self.ai.mediator.get_main_ground_threats_near_townhall
+        # (air threats release queens too — they can transfuse the base)
+        ground_threats: Units = self._filter_defence_threats(
+            self.ai.mediator.get_main_ground_threats_near_townhall
+        )
         if (
             ground_threats
             and self.ai.get_total_supply(ground_threats)
             >= DEFENCE_GROUND_SUPPLY_THRESHOLD
+        ):
+            return 0
+        air_threats: Units = self._filter_defence_threats(
+            self.ai.mediator.get_main_air_threats_near_townhall
+        )
+        if (
+            air_threats
+            and self.ai.get_total_supply(air_threats) >= DEFENCE_AIR_SUPPLY_THRESHOLD
         ):
             return 0
         if num_queens < MIN_QUEENS_FOR_SPECIALIZATION:
@@ -183,10 +202,14 @@ class QueenManager:
             return 0
 
         # Don't spread when under significant pressure
-        ground_threats: Units = self.ai.mediator.get_main_ground_threats_near_townhall
+        ground_threats: Units = self._filter_defence_threats(
+            self.ai.mediator.get_main_ground_threats_near_townhall
+        )
         if ground_threats and self.ai.get_total_supply(ground_threats) >= 4.0:
             return 0
-        air_threats: Units = self.ai.mediator.get_main_air_threats_near_townhall
+        air_threats: Units = self._filter_defence_threats(
+            self.ai.mediator.get_main_air_threats_near_townhall
+        )
         if air_threats and self.ai.get_total_supply(air_threats) >= 6.0:
             return 0
 
@@ -399,8 +422,12 @@ class QueenManager:
         for Zerg queens: uses supply-based threat assessment and ARES
         CombatManeuver behaviors instead of raw attack commands.
         """
-        ground_threats: Units = self.ai.mediator.get_main_ground_threats_near_townhall
-        air_threats: Units = self.ai.mediator.get_main_air_threats_near_townhall
+        ground_threats: Units = self._filter_defence_threats(
+            self.ai.mediator.get_main_ground_threats_near_townhall
+        )
+        air_threats: Units = self._filter_defence_threats(
+            self.ai.mediator.get_main_air_threats_near_townhall
+        )
 
         has_ground_threat: bool = (
             ground_threats
@@ -469,6 +496,14 @@ class QueenManager:
         ]
         for tag in stale_tags:
             del self._defender_last_threat_time[tag]
+
+    def _filter_defence_threats(self, threats: Units) -> Units:
+        """Drop units that pose no real threat to the base.
+
+        Overlords/overseers are harmless scouts; a single worker is a
+        scout run-by, not an attack.
+        """
+        return threats.filter(lambda u: u.type_id not in HARMLESS_THREAT_TYPES)
 
     def _threatened_townhalls(
         self, ground_threats: Units, air_threats: Units
