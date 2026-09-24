@@ -254,9 +254,19 @@ class MacroManager:
         if self._threats.get("rush_detected", False) and self._ai.supply_army < 16:
             max_workers = min(max_workers, 30)
         idle_townhalls: bool = bool(self._ai.townhalls.idle)
+        # Rush defense: hold drone production until the defense queen
+        # floor is met (2 built + pending). Drones drain the mineral
+        # bank 50 at a time; queens need 150 banked to train. Queens
+        # are the backbone of the anti-rush defense, so they go first.
+        rush_hold_workers: bool = (
+            self._threats.get("rush_detected", False)
+            and len(self._ai.mediator.get_own_army_dict[UnitID.QUEEN])
+            + cy_unit_pending(self._ai, UnitID.QUEEN)
+            < RUSH_DEFENSE_QUEENS
+        )
         need_workers: bool = (
             self._ai.supply_workers < WORKER_PRIORITY_THRESHOLD or idle_townhalls
-        )
+        ) and not rush_hold_workers
         if need_workers:
             macro_plan.add(BuildWorkers(to_count=max_workers))
 
