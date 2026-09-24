@@ -133,16 +133,11 @@ Builds:
             - 18 overlord
             - 18 zergling @nat
             - 18 zergling @nat
-            - 20 queen
+            - 18 queen
             # resume droning, tech interleaved
-            - 20 worker x6
-            - 29 extractor x2
-            - 29 worker x3
-            - 30 roachwarren
-            - 32 worker
+            - 18 worker x6
+            - 18 extractor x2
+            - 18 worker x3
+            - 18 roachwarren
             # bank 300 for third base
-            - 33 hatchery
-            - 32 worker x8
-            - 40 ZERGLINGMOVEMENTSPEED
-            - 40 roach x5
-        
+            - 20 hatchery
