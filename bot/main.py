@@ -6,23 +6,21 @@
 
 from typing import Optional
 
+from ares import AresBot
+from ares.consts import ALL_STRUCTURES, WORKER_TYPES, UnitRole
 from loguru import logger
+from sc2.data import Result
 from sc2.ids.unit_typeid import UnitTypeId as UnitID
 from sc2.position import Point2
 from sc2.unit import Unit
 from sc2.units import Units
 
-from ares import AresBot
-from ares.consts import ALL_STRUCTURES, WORKER_TYPES, UnitRole
-
-from sc2.data import Result
-
 from bot.combat import CombatManager
+from bot.managers.defense_manager import DefenseManager
 from bot.managers.macro_manager import MacroManager
 from bot.managers.queen_manager import QueenManager
 from bot.managers.worker_defense_manager import WorkerDefenseManager
 from bot.utilities.game_report import TelemetryRecorder
-
 
 # ── Patch 5.0.16 compatibility shim ─────────────────────────────────────────
 # New AIE maps emit units unknown to the installed python-sc2 enum
@@ -64,8 +62,8 @@ IGNORE_ROLE_TYPES: set[UnitID] = {
     UnitID.OVERSEER,
     UnitID.DRONE,
     UnitID.QUEEN,  # Queens managed by QueenManager with QUEEN_* roles
-    UnitID.RAVAGERCOCOON,   # Morphing — will get ATTACKING when Ravager emerges
-    UnitID.BROODLORDCOCOON, # Morphing — will get ATTACKING when Broodlord emerges
+    UnitID.RAVAGERCOCOON,  # Morphing — will get ATTACKING when Ravager emerges
+    UnitID.BROODLORDCOCOON,  # Morphing — will get ATTACKING when Broodlord emerges
 }
 
 
@@ -79,6 +77,7 @@ class Holdfast(AresBot):
         self._macro_mgr: Optional[MacroManager] = None
         self._telemetry: Optional[TelemetryRecorder] = None
         self._worker_defense_mgr: Optional[WorkerDefenseManager] = None
+        self._defense_mgr: Optional[DefenseManager] = None
 
     @property
     def attack_target(self) -> Point2:
@@ -95,6 +94,7 @@ class Holdfast(AresBot):
         self._macro_mgr = MacroManager(self)
         self._telemetry = TelemetryRecorder(self)
         self._worker_defense_mgr = WorkerDefenseManager(self)
+        self._defense_mgr = DefenseManager(self)
 
     async def on_step(self, iteration: int) -> None:
         await super().on_step(iteration)
@@ -104,6 +104,10 @@ class Holdfast(AresBot):
         # ── Macro (economy, production, tech, upgrades, responses) ──────────
         if self._macro_mgr is not None:
             self._macro_mgr.update()
+
+        # ── Defense tracking (must run before combat reads the flag) ────────
+        if self._defense_mgr is not None:
+            self._defense_mgr.update()
 
         # ── Combat (army micro) ─────────────────────────────────────────────
         forces: Units = self.mediator.get_units_from_role(role=UnitRole.ATTACKING)

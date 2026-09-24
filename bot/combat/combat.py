@@ -8,12 +8,6 @@ from itertools import cycle
 from typing import Optional
 
 import numpy as np
-from cython_extensions import cy_center, cy_closest_to, cy_distance_to
-from sc2.ids.unit_typeid import UnitTypeId as UnitID
-from sc2.position import Point2
-from sc2.unit import Unit
-from sc2.units import Units
-
 from ares import AresBot
 from ares.behaviors.combat import CombatManeuver
 from ares.behaviors.combat.group import AMoveGroup, PathGroupToTarget
@@ -25,6 +19,11 @@ from ares.consts import (
     UnitTreeQueryType,
 )
 from ares.managers.squad_manager import UnitSquad
+from cython_extensions import cy_center, cy_closest_to, cy_distance_to
+from sc2.ids.unit_typeid import UnitTypeId as UnitID
+from sc2.position import Point2
+from sc2.unit import Unit
+from sc2.units import Units
 
 from bot.combat.unit_micro import UnitMicro
 
@@ -35,8 +34,11 @@ ENEMY_NEAR_SQUAD_DISTANCE_SQ: float = 225.0  # 15.0^2
 
 # Unit types to ignore when counting enemies
 COMMON_UNIT_IGNORE_TYPES: set[UnitID] = {
-    UnitID.EGG, UnitID.LARVA,
-    UnitID.CREEPTUMOR, UnitID.CREEPTUMORQUEEN, UnitID.CREEPTUMORBURROWED,
+    UnitID.EGG,
+    UnitID.LARVA,
+    UnitID.CREEPTUMOR,
+    UnitID.CREEPTUMORQUEEN,
+    UnitID.CREEPTUMORBURROWED,
 }
 
 
@@ -60,9 +62,12 @@ class CombatManager:
         ai = self._ai
         # Priority: closest enemy structure to enemy natural
         enemy_structures: Units = ai.enemy_structures.filter(
-            lambda s: s.type_id not in {
-                UnitID.CREEPTUMOR, UnitID.CREEPTUMORQUEEN,
-                UnitID.CREEPTUMORBURROWED, UnitID.NYDUSCANAL,
+            lambda s: s.type_id
+            not in {
+                UnitID.CREEPTUMOR,
+                UnitID.CREEPTUMORQUEEN,
+                UnitID.CREEPTUMORBURROWED,
+                UnitID.NYDUSCANAL,
             }
         )
         if enemy_structures:
@@ -84,7 +89,13 @@ class CombatManager:
     def rally_point(self) -> Point2:
         """Rally point for the army when not aggressive."""
         ai = self._ai
-        # If there's a ground threat near a townhall, rally there
+        # Under attack: rally at the tracked threat position (ground or air)
+        defense_mgr = ai._defense_mgr
+        if defense_mgr is not None and defense_mgr.under_attack:
+            if defense_mgr.threat_position is not None:
+                return defense_mgr.threat_position
+
+        # Otherwise: ground threat near a townhall takes priority
         if threats := ai.mediator.get_main_ground_threats_near_townhall:
             return Point2(cy_center(threats))
 
@@ -128,9 +139,7 @@ class CombatManager:
                 start_points=[squad_position],
                 distances=18.5,
                 query_tree=UnitTreeQueryType.AllEnemy,
-            )[0].filter(
-                lambda u: u.type_id not in COMMON_UNIT_IGNORE_TYPES
-            )
+            )[0].filter(lambda u: u.type_id not in COMMON_UNIT_IGNORE_TYPES)
 
             # ── Group movement when no enemies nearby ─────────────────────
             # If no enemies are close to the squad, move as a group to keep
@@ -184,6 +193,14 @@ class CombatManager:
     def _check_aggressive(self, forces: Units) -> None:
         """Determine if the army should be aggressive or defensive."""
         ai = self._ai
+
+        # Under attack: always defend — cancel any ongoing attack
+        defense_mgr = ai._defense_mgr
+        if defense_mgr is not None and defense_mgr.under_attack:
+            if self.aggressive:
+                self.aggressive = False
+                self._emit_transition("attack", "defend")
+            return
 
         # If already aggressive, stay aggressive unless losing badly
         if self.aggressive:
@@ -243,8 +260,13 @@ class CombatManager:
             return
 
         # If defending and enemy is near our base, always engage
+        # (defense_mgr flag covers ground + flying threats)
         if not self.aggressive:
-            if ai.mediator.get_main_ground_threats_near_townhall:
+            defense_mgr = ai._defense_mgr
+            under_attack = (
+                defense_mgr is not None and defense_mgr.under_attack
+            ) or bool(ai.mediator.get_main_ground_threats_near_townhall)
+            if under_attack:
                 self._squad_engaged[squad_id] = True
                 return
 
