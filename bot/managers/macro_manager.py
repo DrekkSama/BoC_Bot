@@ -8,6 +8,11 @@
 #   Roach Warren ensured via TechUp placed BEFORE SpawnController in the
 #   plan — MacroPlan short-circuits on first True, so tech must unlock
 #   before production can stall on it (covers aborted builds + snipes).
+#   Rush hold covers ALL tech+unit spends (warren/lair/hive/proactive
+#   tech/drones/army/morphs) until the 2-queen defense floor is met —
+#   the Warren costs exactly a queen (150m) and would otherwise snipe
+#   the queen bank every frame the queen can't train (busy hatch /
+#   supply block). Threat-response spines + AutoSupply stay active.
 #   Reactive tech (Hydralisk Den) built only on air threat detection.
 #   Gated upgrades (Grooved Spines, Centrifugal Hooks) only included when
 #   their prerequisite building exists, preventing auto-tech-up.
@@ -324,18 +329,24 @@ class MacroManager:
         # every single frame — TechUp never got a look in. TechUp
         # self-guards: skips if the warren is present/pending, chains a
         # Spawning Pool if missing, returns True only on the queue frame.
-        macro_plan.add(
-            TechUp(
-                desired_tech=UnitID.ROACHWARREN, base_location=self._ai.start_location
+        # Held during rush until the queen floor is met — the Warren (150m)
+        # costs exactly a queen (150m) and would snipe the bank every frame
+        # the queen can't train (busy hatch / supply block).
+        if not rush_hold_production:
+            macro_plan.add(
+                TechUp(
+                    desired_tech=UnitID.ROACHWARREN,
+                    base_location=self._ai.start_location,
+                )
             )
-        )
 
-        # Lair
+        # Lair — held during rush (same queen-floor reason as the Warren)
         lair_tech: bool = (
             len(structure_dict[UnitID.LAIR]) > 0 or len(structure_dict[UnitID.HIVE]) > 0
         )
         if (
-            self._ai.vespene >= 100
+            not rush_hold_production
+            and self._ai.vespene >= 100
             and not lair_tech
             and len(self._ai.mediator.get_own_army_dict[UnitID.QUEEN]) >= 4
         ):
@@ -343,9 +354,10 @@ class MacroManager:
                 TechUp(desired_tech=UnitID.LAIR, base_location=self._ai.start_location)
             )
 
-        # Hive at high supply
+        # Hive at high supply — held during rush (same queen-floor reason)
         if (
-            self._ai.supply_used > 170.0
+            not rush_hold_production
+            and self._ai.supply_used > 170.0
             and len(structure_dict.get(UnitID.HIVE, [])) == 0
         ):
             macro_plan.add(
@@ -377,8 +389,11 @@ class MacroManager:
                 )
             macro_plan.add(SpawnController(army_comp, freeflow_mode=freeflow))
 
-        # Proactive tech buildings — built when economy supports them
-        self._build_proactive_tech()
+        # Proactive tech buildings — built when economy supports them.
+        # Held during rush until the queen floor is met (Baneling Nest
+        # costs 100m — would compete with the 150m queen bank).
+        if not rush_hold_production:
+            self._build_proactive_tech()
 
         # Queen production — target = ready bases + 1
         # Uses direct train() instead of SpawnController because queens
