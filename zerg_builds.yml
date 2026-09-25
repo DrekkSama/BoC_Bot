@@ -36,8 +36,8 @@ BuildChoices:
         BotName: ZergRace
         Cycle:
             #- B2GM_Roach_Ravager_Ling
-            #- Lambo_ZvZ_Economic
-            - Pig_Hatch_Firs_5.0.16
+            - Lambo_ZvZ_Economic
+            #- Pig_Hatch_Firs_5.0.16
 
     # Can also use specific opponent ids (overrides race options above)
     a_bot_opponent_id_from_aiarena:
@@ -75,31 +75,58 @@ Builds:
             - 40 evolutionchamber
             - 46 roach x5
 
+    # Lambo ZvZ Economic — workers fully scripted (till 0). https://lotv.spawningtool.com/build/199749/
+    # Pre-5.0.16 patch: 12 starting workers (used 12, cap 17).
+    # Transcribed from ST: order+pauses from the build; gates re-derived
+    # for sequential runner (ST supply numbers assume eggs hatching
+    # mid-sequence — unreachable here). Banks: 300 nat (0:47), 200 pool
+    # (1:13), 150x2 queens (1:59), 300 third (2:39). Lings strictly
+    # after both queens. Ends at roach warren (ST 3:45); post-build
+    # MacroManager.BuildWorkers resumes droning.
     Lambo_ZvZ_Economic:
-        ConstantWorkerProductionTill: 44
+        ConstantWorkerProductionTill: 0
         ShouldHandleGasSteal: False
-        AutoSupplyAtSupply: 28
+        AutoSupplyAtSupply: 44
         OpeningBuildOrder:
-            - 13 overlord
+            # ST: 12 drone, 13 OL scouts their 3rd
+            - 12 worker
+            - 12 overlord
             - 13 overlord_scout:
-                  [enemy_ramp]
+                  [enemy_third]
+            # ST: 13 drone, 14 drone x2 -> 16 workers
+            - 13 worker
+            - 14 worker x2
+            # ST: 16 hatch (0:47) — bank 300, drone consumed
             - 16 hatchery
+            # ST: 15 drone x2 (0:51), 17 drone (0:57)
+            - 15 worker x2
+            - 17 worker
+            # ST: 18 extractor (1:08), 17 pool (1:13) — bank 200
             - 18 extractor
             - 17 spawningpool
-            - 21 overlord
+            # ST: 17 drone x2 (1:15), 18 drone (1:28) -> 19 workers
+            - 16 worker x2
+            - 18 worker
+            # ST: 19 overlord (1:40)
+            - 19 overlord
+            # ST: 19 queen x2 (1:59) — bank 150 x2, nothing between
+            - 19 queen
             - 21 queen
-            - 21 queen
+            # ST: 2:00 zergling x6 (x3 steps, +1 supply each), 2:10 speed
+            - 23 zergling x3
             - 26 ZERGLINGMOVEMENTSPEED
-            - 29 zergling x4
-            - 31 hatchery
-            - 30 banelingnest
-            - 33 overlord
-            - 33 zergling x8
-            - 36 queen
-            - 39 baneling x2
-            - 42 overlord
-            - 44 evolutionchamber
-            - 47 overlord
+            # ST: 30 hatch (2:39) — bank 300 for third, no drones between
+            - 24 hatchery
+            # ST: 32 baneling nest, OL; 36 safety lings x6
+            - 23 banelingnest
+            - 24 overlord
+            - 24 zergling x3
+            # ST: 40 OL, 41 extractor, 41 queen, 42 banelings, 44 warren
+            - 26 overlord
+            - 26 extractor
+            - 26 queen
+            - 28 baneling x2
+            - 28 roachwarren
 
     # Pig's Hatch First (5.0.16) — workers fully scripted (till 0).
     # Pauses are omissions: bank 300 for natural (12), 150x2 for first
