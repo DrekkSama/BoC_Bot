@@ -15,13 +15,13 @@ Patch: Current
 # Maps for local runs: one chosen at random each run.
 # empty -> auto-discover all .SC2Map files in MAPS_PATH
 Maps:
-    - UltraloveAIE_v2
+    #- UltraloveAIE_v2
     # - PylonAIE_v4
     # - PersephoneAIE_v4
     # - TorchesAIE_v4
     # - IncorporealAIE_v4
     # - MagannathaAIE_v2
-    # - UltraloveAIE_5.0.16_v2
+     - UltraloveAIE_5.0.16_v2
     #### Micro Maps
     # - Tier1MicroAIArena_v6
     # - Tier2MicroAIArena_v6

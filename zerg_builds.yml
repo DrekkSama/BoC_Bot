@@ -36,8 +36,8 @@ BuildChoices:
         BotName: ZergRace
         Cycle:
             #- B2GM_Roach_Ravager_Ling
-            - Lambo_ZvZ_Economic
-            #- Pig_Hatch_Firs_5.0.16
+            #- Lambo_ZvZ_Economic
+            - Pig_Hatch_Firs_5.0.16
 
     # Can also use specific opponent ids (overrides race options above)
     a_bot_opponent_id_from_aiarena:
