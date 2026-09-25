@@ -2,8 +2,13 @@
 # Key Decisions: Early game roach/ling/bane/ravager, mid-game adds infestor,
 #   hydra only when air threats detected. Composition switches on economy
 #   (drone count) with time as fallback, not time alone.
+#   SpawnController (non-freeflow) hard-breaks when its HIGHEST priority
+#   unit is unaffordable — see prioritize_affordable_units, which reorders
+#   priorities so an affordable unit leads and production never stalls.
 # Limitations: No dynamic composition switching beyond air/economy detection yet
 
+from ares.dicts.cost_dict import COST_DICT
+from sc2.game_data import Cost
 from sc2.ids.unit_typeid import UnitTypeId as UnitID
 
 # Early game (< 6 min or < 36 drones): roach/ling/bane/ravager
@@ -107,7 +112,9 @@ def strip_morph_units(
             scale: float = 1.0 / current_sum
             for uid in stripped_comp:
                 stripped_comp[uid] = dict(stripped_comp[uid])
-                stripped_comp[uid]["proportion"] = stripped_comp[uid]["proportion"] * scale
+                stripped_comp[uid]["proportion"] = (
+                    stripped_comp[uid]["proportion"] * scale
+                )
 
     return stripped_comp
 
@@ -138,9 +145,7 @@ def should_morph(
 
     # Only count comp-relevant units for total
     comp_unit_types: set[UnitID] = set(comp.keys())
-    total_comp_units: int = sum(
-        army_counts.get(uid, 0) for uid in comp_unit_types
-    )
+    total_comp_units: int = sum(army_counts.get(uid, 0) for uid in comp_unit_types)
     if total_comp_units <= 0:
         return False
 
@@ -159,3 +164,53 @@ def should_morph(
         return False
 
     return True
+
+
+def prioritize_affordable_units(
+    comp: dict[UnitID, dict],
+    minerals: float,
+    vespene: float,
+) -> dict[UnitID, dict]:
+    """Reorder priorities so affordable units lead; unaffordable go last.
+
+    SpawnController (non-freeflow) iterates by priority and hard-BREAKS on
+    the first unaffordable unit, producing nothing that frame. If our
+    priority-1 unit (Roach, 75m/25g) is gas-starved, Zerglings (50m/0g)
+    behind it are never produced — the exact "lings stall when gas runs
+    out, then the bank rots" footgun. This mirrors PiGBot's
+    `reorder_priorities_by_resources`: push unaffordable types behind
+    affordable ones so the break only bites after spendable options.
+
+    Proportions are untouched; only "priority" values change
+    (lower = higher priority in SpawnController). Returns a new dict.
+
+    Perf note: O(k log k) sort, k = unit types in comp (~4). Negligible.
+
+    Args:
+        comp: Army composition dict (already morph-stripped).
+        minerals: Current mineral bank.
+        vespene: Current vespene bank.
+    """
+    affordable: list[UnitID] = []
+    unaffordable: list[UnitID] = []
+    for unit_type in comp:
+        cost: Cost = COST_DICT.get(unit_type, Cost(0, 0))
+        if minerals >= cost.minerals and vespene >= cost.vespene:
+            affordable.append(unit_type)
+        else:
+            unaffordable.append(unit_type)
+
+    # Nothing to reorder — everything affordable or nothing at all
+    if not unaffordable or not affordable:
+        return comp
+
+    # Stable: preserves existing priority order within each group
+    affordable.sort(key=lambda ut: comp[ut]["priority"])
+    unaffordable.sort(key=lambda ut: comp[ut]["priority"])
+
+    reordered: dict[UnitID, dict] = {}
+    for new_priority, unit_type in enumerate(affordable + unaffordable):
+        info: dict = dict(comp[unit_type])
+        info["priority"] = new_priority
+        reordered[unit_type] = info
+    return reordered
