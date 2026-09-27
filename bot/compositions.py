@@ -176,9 +176,7 @@ def prioritize_affordable_units(
     SpawnController (non-freeflow) iterates by priority and hard-BREAKS on
     the first unaffordable unit, producing nothing that frame. If our
     priority-1 unit (Roach, 75m/25g) is gas-starved, Zerglings (50m/0g)
-    behind it are never produced — the exact "lings stall when gas runs
-    out, then the bank rots" footgun. This mirrors PiGBot's
-    `reorder_priorities_by_resources`: push unaffordable types behind
+    behind it are never produced. Push unaffordable types behind
     affordable ones so the break only bites after spendable options.
 
     Proportions are untouched; only "priority" values change
