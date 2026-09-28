@@ -141,18 +141,15 @@ class QueenManager:
 
     @property_cache_once_per_frame
     def _required_injectors(self) -> int:
-        """How many inject queens we need.
+        """Inject queen count: 1 per townhall (0 while rush or threats active).
 
-        Skip injects during rush or with very few queens.
-        Otherwise, 1 per townhall that doesn't already have an inject queen.
+        Threats near a base release queens from inject duty entirely —
+        queens defend (air threats included: they can transfuse the base).
         """
         num_queens: int = len(self.ai.mediator.get_own_army_dict[UnitID.QUEEN])
 
-        # Don't inject during rush or with very few queens
         if self.ai.mediator.get_did_enemy_rush:
             return 0
-        # Live threat near a base: stop injecting, release queens for defense
-        # (air threats release queens too — they can transfuse the base)
         ground_threats: Units = self._filter_defence_threats(
             self.ai.mediator.get_main_ground_threats_near_townhall
         )
@@ -172,7 +169,6 @@ class QueenManager:
             return 0
         if num_queens < MIN_QUEENS_FOR_SPECIALIZATION:
             return 0
-        # Too many bases to manage injects effectively
         if len(self.ai.townhalls) >= 5:
             return 0
 
@@ -180,18 +176,16 @@ class QueenManager:
 
     @property_cache_once_per_frame
     def _required_creep_spreaders(self) -> int:
-        """How many creep queens we need.
+        """Creep queen count: scales with queens (cap MAX_CREEP_SPREADERS).
 
-        From the example: scale with queen count, cap at MAX_CREEP_SPREADERS.
-        Stop if creep coverage is high or too many tumors.
-        Don't spread when under significant pressure.
+        Returns 0 while under significant pressure (threats near bases) —
+        queens should fight, not spread tumors.
         """
         num_queens: int = len(self.ai.mediator.get_own_army_dict[UnitID.QUEEN])
 
         if num_queens < MIN_QUEENS_FOR_SPECIALIZATION:
             return 0
 
-        # Stop spreading if coverage is high or too many tumors
         coverage: float = self.ai.mediator.get_creep_coverage
         if coverage > CREEP_COVERAGE_STOP:
             return 0
@@ -201,7 +195,6 @@ class QueenManager:
         if num_tumors > MAX_TUMORS:
             return 0
 
-        # Don't spread when under significant pressure
         ground_threats: Units = self._filter_defence_threats(
             self.ai.mediator.get_main_ground_threats_near_townhall
         )
@@ -213,7 +206,6 @@ class QueenManager:
         if air_threats and self.ai.get_total_supply(air_threats) >= 6.0:
             return 0
 
-        # Scale with queen count, cap at MAX_CREEP_SPREADERS
         return min(MAX_CREEP_SPREADERS, max(1, num_queens - 3))
 
     # ── Role Management ─────────────────────────────────────────────────────
@@ -412,15 +404,11 @@ class QueenManager:
     def _assign_base_defenders(
         self, creep_queens: Units, defending_queens: Units
     ) -> None:
-        """Temporarily steal creep queens to defend bases when threats appear.
+        """Steal up to MAX_DEFENDERS creep queens into DEFENDING while
+        threats (filtered, above supply thresholds) are near our bases.
 
-        This replaces the old permanent QUEEN_DEFENCE role. Queens are only
-        pulled from creep duty when there are actual threats near bases.
-        When threats clear, queens return to QUEEN_CREEP after a grace period.
-
-        Inspired by combat_manager_sample._assign_base_defenders but adapted
-        for Zerg queens: uses supply-based threat assessment and ARES
-        CombatManeuver behaviors instead of raw attack commands.
+        Defenders return to QUEEN_CREEP after DEFENCE_GRACE_PERIOD with
+        no threat (see _control_defending_queens' caller flow).
         """
         ground_threats: Units = self._filter_defence_threats(
             self.ai.mediator.get_main_ground_threats_near_townhall
@@ -440,31 +428,25 @@ class QueenManager:
         )
         has_threat: bool = has_ground_threat or has_air_threat
 
-        # ── Update threat timestamps for current defenders ────────────
         if has_threat:
             for queen in defending_queens:
                 self._defender_last_threat_time[queen.tag] = self.ai.time
 
-        # ── Pull creep queens into defense if needed ──────────────────
         if has_threat:
             num_defenders: int = len(defending_queens)
             if num_defenders < MAX_DEFENDERS and creep_queens:
-                # Steal the closest creep queen to the threat
                 num_to_steal: int = min(
                     MAX_DEFENDERS - num_defenders,
                     len(creep_queens),
                 )
-                # Pick queens closest to the threatened base
                 for _ in range(num_to_steal):
                     if not creep_queens:
                         break
-                    # Find the closest creep queen to any threatened townhall
                     threatened_ths: list[Unit] = self._threatened_townhalls(
                         ground_threats, air_threats
                     )
                     if not threatened_ths:
                         break
-                    # Use first threatened TH as reference point
                     ref_pos: Point2 = threatened_ths[0].position
                     closest_creep: Unit = cy_closest_to(ref_pos, creep_queens)
                     self.ai.mediator.assign_role(

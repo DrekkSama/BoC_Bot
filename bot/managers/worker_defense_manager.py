@@ -3,7 +3,7 @@
 #   select_worker(force_close=True) picks miners closest to the incoming attack.
 #   Melee chain: AOE dodge (avoidance grid) -> attack in-range target -> advance.
 #   Massed melee drones beat lings; kiting loses to faster lings. DEFENDING role
-#   + 5s grace prevents Mining recapture and GATHERING<->DEFENDING oscillation.
+#   + grace period prevents Mining recapture and GATHERING<->DEFENDING oscillation.
 # Limitations: Ling rushes only (no roach/worker-rush pulls). Gas workers never
 #   pulled (select_worker limitation). Memory-ghost threats hold workers idle.
 
@@ -50,7 +50,8 @@ class WorkerDefenseManager:
 
     QueenManager defends with queens; this manager adds worker mass only when
     the ARES ling-rush detector has latched AND enemies are actually near one
-    of our townhalls. Workers return to mining 5s after threats clear.
+    of our townhalls. Workers return to mining WORKER_DEFENCE_GRACE_PERIOD
+    seconds after threats clear.
     """
 
     def __init__(self, ai: AresBot) -> None:
@@ -136,7 +137,8 @@ class WorkerDefenseManager:
             self.ai.register_behavior(maneuver)
 
     def _release_workers(self, defending: Units) -> None:
-        """Return defenders to mining once threats have been clear for 5s."""
+        """Return defenders to mining once threats have cleared for the
+        grace period."""
         for worker in defending:
             last_threat: float = self._defender_last_threat_time.get(worker.tag, 0.0)
             if self.ai.time - last_threat > WORKER_DEFENCE_GRACE_PERIOD:

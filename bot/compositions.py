@@ -1,11 +1,12 @@
 # Purpose: Army composition definitions for SpawnController / ProductionController
 # Key Decisions: Early game roach/ling/bane/ravager, mid-game adds infestor,
-#   hydra only when air threats detected. Composition switches on economy
-#   (drone count) with time as fallback, not time alone.
+#   hydra only when air threats detected, pure zerglings while a rush
+#   response is active. Composition switches on economy (drone count)
+#   with time as fallback, not time alone.
 #   SpawnController (non-freeflow) hard-breaks when its HIGHEST priority
 #   unit is unaffordable — see prioritize_affordable_units, which reorders
 #   priorities so an affordable unit leads and production never stalls.
-# Limitations: No dynamic composition switching beyond air/economy detection yet
+# Limitations: No dynamic composition switching beyond air/economy/rush detection
 
 from ares.dicts.cost_dict import COST_DICT
 from sc2.game_data import Cost
@@ -30,7 +31,7 @@ MID_COMP: dict[UnitID, dict] = {
 }
 
 # Anti-air variant: heavy hydra for air-heavy opponents
-# Hydralisk Den is built reactively by response_manager when air_signs detected
+# Hydralisk Den is built reactively by MacroManager when air_signs detected
 ANTI_AIR_COMP: dict[UnitID, dict] = {
     UnitID.ROACH: {"proportion": 0.30, "priority": 1},
     UnitID.HYDRALISK: {"proportion": 0.35, "priority": 2},

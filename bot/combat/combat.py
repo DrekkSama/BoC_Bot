@@ -2,6 +2,8 @@
 # Key Decisions: ARES squad system, can_win_fight for engagement, hysteresis for stability.
 #   Group behaviors (PathGroupToTarget, AMoveGroup) for map movement to keep army together.
 #   Individual behaviors for combat micro when enemies are near.
+#   DefenseManager's under_attack flag redirects the army to base threats
+#   (ground or air) and cancels any ongoing attack.
 # Limitations: No neural parasite, no flying squad separation yet
 
 from itertools import cycle
