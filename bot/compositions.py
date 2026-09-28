@@ -39,6 +39,13 @@ ANTI_AIR_COMP: dict[UnitID, dict] = {
     UnitID.INFESTOR: {"proportion": 0.05, "priority": 5},
 }
 
+# Rush defense profile: pure zerglings — cheap, fast, no gas, no tech.
+# Active for the whole rush response (queens secured or not). Morph gates
+# read the comp, so no bane/ravager morphs happen while it is active.
+RUSH_DEFENSE_COMP: dict[UnitID, dict] = {
+    UnitID.ZERGLING: {"proportion": 1.0, "priority": 1},
+}
+
 # Economy thresholds for composition switching
 # 36 drones = gas phase 2, enough economy to support infestors
 MID_GAME_DRONES: int = 36
@@ -59,19 +66,27 @@ MORPH_GATES: dict[UnitID, tuple[UnitID, float]] = {
 
 
 def get_army_comp(
-    time: float, air_threat: bool = False, drone_count: int = 0
+    time: float,
+    air_threat: bool = False,
+    drone_count: int = 0,
+    rush_active: bool = False,
 ) -> dict[UnitID, dict]:
     """Return the appropriate army composition based on game state.
 
     Switches to mid-game comp when either the economy is ready (36+ drones)
     or enough time has passed (6 min). Air threat overrides to anti-air comp.
+    Rush response overrides everything with the ling-only defense comp.
 
     Args:
         time: Current game time in seconds.
         air_threat: True if air signs detected (stargate, starport techlab,
             fusion core, fleet beacon, or visible air units).
         drone_count: Current number of workers (supply_workers).
+        rush_active: True while the rush response state machine is active.
     """
+    if rush_active:
+        return RUSH_DEFENSE_COMP
+
     if air_threat:
         return ANTI_AIR_COMP
 
