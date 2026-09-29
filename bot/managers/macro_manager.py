@@ -1,40 +1,27 @@
 # Purpose: Centralized macro management — workers, supply, gas, queens,
-#   spawning, tech, upgrades, expansions, and reactive building.
-# Key Decisions: All MacroPlan behaviors live here. Research and response
-#   logic folded in from their old standalone modules. The attack_target
-#   property is also owned here since it's a macro-level decision.
-#   Queen production: target = ready bases + 1, produced via SpawnController.
-#   Proactive tech (Baneling Nest, Infestation Pit) built on economy thresholds.
-#   Roach Warren ensured via TechUp placed BEFORE SpawnController in the
-#   plan — MacroPlan short-circuits on first True, so tech must unlock
-#   before production can stall on it (covers aborted builds + snipes).
-#   Rush response is a three-state machine (RushState, below), following
-#   the ReactionManager lifecycle pattern from PiGBot:
-#   SECURING (rush latched, queens < 2): abort the opening build and hold
-#   ALL tech + unit + expansion spends so queens come first — queens train
-#   from townhalls (no larva contest), and every other spend would snipe
-#   the 150m queen bank. DEFENDING (queens up, rush not cleared): rush
-#   defense profile — pure zerglings (RUSH_DEFENSE_COMP), drones capped
-#   at RUSH_WORKER_CAP, gas/expansions frozen, all tech/upgrades held;
-#   the Spawning Pool is rebuilt first-class if the rush killed it, and
-#   the 2-queen defense floor stays. NONE again after RUSH_CLEAR_GRACE
-#   seconds with no enemy combat units near our bases ("no enemies
-#   around" → back to the plan as usual). ARES rush detection latches
-#   permanently, so clearing also latches (_rush_over) and the raw
-#   mediator flag is never treated as a live condition.
-#   Reactive tech (Hydralisk Den) built only on air threat detection.
-#   Gated upgrades (Grooved Spines, Centrifugal Hooks) only included when
-#   their prerequisite building exists, preventing auto-tech-up.
-#   Expansion gated on base saturation: won't take a new base until existing
-#   ones are near-full. Worker target scales with total (ready+pending) bases.
-#   Worker production above WORKER_PRIORITY_THRESHOLD is gated on mineral
-#   banking (NOT idle townhalls — Zerg hatcheries are idle almost every
-#   frame, so that gate never blocked anything and drones ate all larvae).
-#   Upgrades flow exclusively through the gated UpgradeController (which
-#   auto-builds required tech) — the old ungated _research_upgrades drained
-#   the first 100/100 bank the moment it appeared.
-# Limitations: No nydus network support yet, no dynamic composition
-#   switching beyond air detection.
+#   spawning, tech, upgrades, expansions, and threat responses.
+# Key Decisions: MacroPlan runs ONE behavior per frame (short-circuits on
+#   first True), so plan order encodes priority:
+#   supply -> workers -> gas -> tech -> army -> upgrades -> expansions.
+#   Tech precedes army so a missing Roach Warren is built before
+#   SpawnController starves on it.
+#   Rush response is a three-state machine (see RushState): SECURING holds
+#   all non-queen spends until 2 defense queens are queued; DEFENDING runs
+#   a ling-only profile (RUSH_DEFENSE_COMP, surplus-bank drones, frozen
+#   gas/expansions, held tech/upgrades, pool rebuilt if lost); clearing
+#   requires RUSH_CLEAR_GRACE seconds with no enemy combat near bases and
+#   latches permanently (the ARES flag never un-fires).
+#   Zerg-specific gates: drone ceiling is infrastructure-derived
+#   (bases x 22, capped 80) — no worker-priority or mineral-bank gates.
+#   The MacroPlan ladder runs army ABOVE workers: SpawnController
+#   (affordable-first via prioritize_affordable_units) claims larvae
+#   whenever the comp is affordable and tech-ready, and BuildWorkers gets
+#   the frames the army declines. Halting expansions (rush states, enemies
+#   near bases) freezes the drone ceiling automatically — drones
+#   self-constrain with zero drone-specific logic.
+#   Reactive tech (Hydralisk Den) only on air detection; gated upgrades
+#   only when their prerequisite building exists.
+# Limitations: No nydus support, no dynamic composition beyond air/rush.
 
 from enum import Enum, auto
 
@@ -71,38 +58,28 @@ BEGIN_ATTACK_SUPPLY: float = 6.0
 MID_GAME_TIME: float = 360.0
 NATURAL_TIMING_THRESHOLD: float = 210.0  # 3:30
 
-# Saturation: drones per base for full mineral+gas saturation
-# 16 mineral patches + 6 gas (2 geysers × 3) = 22 ideal, but 20 is
-# a practical threshold — bases rarely have 2 full geysers early on.
+# 16 mineral patches + 6 gas (2 geysers x 3) = 22 ideal per base;
+# 20 is the practical early-game saturation threshold.
 DRONES_PER_SATURATED_BASE: int = 20
 DRONES_PER_FULLY_SATURATED_BASE: int = 22
 
-# Rush defense: minimum queens to target when a rush is detected
-# (two queens back the defense with transfuse + DPS)
+# Rush defense floor: queens back the defense with transfuse + DPS
 RUSH_DEFENSE_QUEENS: int = 2
 
-# Rush defense: max workers while the rush response is active. Larvae go
-# to zerglings — a drone wave costs 50m apiece and robs the ling army.
-RUSH_WORKER_CAP: int = 30
-
-# Rush response clear condition: seconds with no enemy combat units near
-# our bases before the rush is considered over and normal macro resumes.
-# Mirrors PiGBot's CHEESE_THREAT_CLEAR_GRACE — a grace window prevents
-# oscillation from intermittent ling pokes during the transition.
+# Seconds with no enemy combat units near our bases before the rush
+# response clears. Grace window prevents oscillation from ling pokes.
 RUSH_CLEAR_GRACE: float = 30.0
 
 
 class RushState(Enum):
-    """Rush response lifecycle — see header for the full design.
+    """Rush response lifecycle.
 
-    SECURING: rush latched, defense queens not yet up. Everything except
-        queens, supply, and threat spines is held.
-    DEFENDING: queens secured. Rush defense profile: pure lings + capped
-        drones, tech/gas/expansion/upgrades held, pool rebuilt if dead.
-        The 2-queen floor stays until the rush clears.
-    NONE: no rush response active (also the terminal state after a
-        cleared rush — _rush_over latches so the permanent ARES flag
-        can't re-trigger).
+    SECURING: rush latched, defense queens not yet queued. Everything
+        except queens, supply, and threat spines is held.
+    DEFENDING: queens secured. Ling-only defense profile; the 2-queen
+        floor and all defense holds stay until the rush clears.
+    NONE: no rush response. Terminal after a cleared rush — _rush_over
+        latches because the ARES flag is permanent.
     """
 
     NONE = auto()
@@ -110,36 +87,25 @@ class RushState(Enum):
     DEFENDING = auto()
 
 
-# Worker priority: below this drone count, always produce workers
-# even if larvae are contested. Above this, drones are gated on
-# mineral banking (see DRONE_BANK_MINERALS) so army gets larvae
-# priority — idle townhalls was NOT a valid Zerg gate since
-# hatcheries are idle almost every frame.
-WORKER_PRIORITY_THRESHOLD: int = 30
+# Saturation: full mineral+gas saturation per base. This is the ONLY
+# drone ceiling — infrastructure-derived, recomputed each frame. Halting
+# expansions (rush SECURING, enemies near bases) freezes it automatically:
+# drones self-constrain without any worker-priority gate.
+DRONES_PER_FULLY_SATURATED_BASE: int = 22
+DRONE_HARD_CAP: int = 80
 
-# Above WORKER_PRIORITY_THRESHOLD, only resume droning when the
-# mineral bank is high enough to not compete with army larva spends
-# (a drone wave is 50m each; army units run 50-150m each).
-DRONE_BANK_MINERALS: int = 400
-
-# Saturation threshold to allow taking another base (0.75 of a
-# saturated base = 15/20 drones per base). Was 0.85, which lagged
-# 4th/5th bases behind the drone-count phases by ~7 drones.
+# Fraction of full saturation required before taking another base
 EXPANSION_SATURATION_THRESHOLD: float = 0.75
 
-# Free-flow spawning: once we have this many drones, the economy is
-# strong enough that SpawnController should ignore proportions and
-# spend freely — just produce whatever we can afford.
+# Drone count at which SpawnController switches to free-flow spending
+# (economy can sustain production without proportion management)
 FREEFLOW_DRONE_THRESHOLD: int = 60
 
-# Gas phases: (min_drone_count, gas_per_base, max_pending_geysers)
-# Phase 1: Post-build — 1 gas per base (2 total), enough for ling speed + Lair
-# Phase 2: Mid-game — 1.5 gas per base (round up), supports upgrades + ravagers
-# Phase 3: Late-game — 2 gas per base, full saturation for hive tech
+# Gas scaling: (min_drones, gas_per_base, max_pending_geysers)
 GAS_PHASES: list[tuple[int, float, int]] = [
-    (0, 1.0, 1),  # Phase 1: 1 geyser per base
-    (36, 1.5, 2),  # Phase 2: 1.5 geysers per base (rounds up)
-    (56, 2.0, 2),  # Phase 3: 2 geysers per base
+    (0, 1.0, 1),  # 1 geyser per base: ling speed + Lair
+    (36, 1.5, 2),  # 1.5 per base: upgrades + ravagers
+    (56, 2.0, 2),  # 2 per base: full hive-tech saturation
 ]
 
 # Upgrade priority order (lower = higher priority)
@@ -156,7 +122,7 @@ UPGRADE_PRIORITY: list[UpgradeID] = [
     UpgradeID.OVERLORDSPEED,
 ]
 
-# Air-detection structure types
+# Enemy structures that signal air tech
 AIR_STRUCTURES: set[UnitID] = {
     UnitID.FUSIONCORE,
     UnitID.STARGATE,
@@ -164,8 +130,8 @@ AIR_STRUCTURES: set[UnitID] = {
     UnitID.FLEETBEACON,
 }
 
-# Air unit types that warrant Hydralisk production
-# Excludes non-combat air (Overlord, Overseer, Observer, WarpPrism)
+# Combat air units that warrant Hydralisk production
+# (non-combat air excluded: Overlord, Overseer, Observer, WarpPrism)
 AIR_UNIT_TYPES: set[UnitID] = {
     # Protoss
     UnitID.VOIDRAY,
@@ -188,7 +154,7 @@ AIR_UNIT_TYPES: set[UnitID] = {
     UnitID.BROODLORD,
 }
 
-# Light unit types for mass detection
+# Light units counted for mass-light threat detection
 LIGHT_UNIT_TYPES: set[UnitID] = {
     UnitID.ZERGLING,
     UnitID.ZEALOT,
@@ -196,7 +162,7 @@ LIGHT_UNIT_TYPES: set[UnitID] = {
     UnitID.MARINE,
 }
 
-# Response constants
+# Threat response counts
 SAFETY_ROACH_COUNT: int = 5
 EMERGENCY_SPINE_COUNT: int = 2
 MINERAL_LINE_SPINE_COUNT: int = 1
@@ -218,6 +184,9 @@ class MacroManager:
         self._rush_over: bool = False
         # Last time enemy combat units were seen near our bases
         self._last_threat_near_base_time: float = -1.0
+        # RECOVERY state (derived each frame in _do_macro_plan): economy
+        # unsaturated and no active threat — drone rebuild, no investment
+        self._recovering: bool = False
         self._threats: dict[str, bool] = {
             "no_natural": False,
             "timing_push": False,
@@ -259,18 +228,12 @@ class MacroManager:
 
     def update(self) -> None:
         """Run every frame: economy, production, tech, upgrades, responses."""
-        # Always mine (mineral boosting / speedmining disabled)
         self._ai.register_behavior(Mining(mineral_boost=False))
-
-        # Morph units every frame, even during build order — SpawnController
-        # can't morph combat units (they're never idle), so we do it manually.
-        # This must run before the build-runner return so morphing continues
-        # during the opening build order.
         self._morph_units_standalone()
 
-        # Rush flag: latches once ARES detects an enemy rush (ARES's flag is
-        # itself permanent). Aborts the opening build order so dynamic macro
-        # (defense queens, spines, army) takes over.
+        # Latch the rush reaction once: abort the opening build so dynamic
+        # macro (defense queens, spines, army) can take over. The ARES
+        # rush flag is permanent, so this must fire exactly once.
         if (
             not self._rush_reacted
             and self._ai.mediator.get_did_enemy_rush
@@ -286,8 +249,8 @@ class MacroManager:
 
         self._update_rush_state()
 
-        # Failsafe: if build is still active but minerals are piling up,
-        # force-complete the build so dynamic macro can take over
+        # Stalled build with a big bank: force-complete so dynamic macro
+        # can take over
         if not self._ai.build_order_runner.build_completed:
             if self._ai.minerals >= 1500:
                 self._ai.build_order_runner.set_build_completed()
@@ -301,41 +264,35 @@ class MacroManager:
     # ── Rush State Machine ──────────────────────────────────────────────────
 
     def _update_rush_state(self) -> None:
-        """Advance the rush response lifecycle. Call once per frame.
+        """Advance the rush response state machine. Call once per frame.
 
-        Transitions (one-way, matching PiGBot's ReactionManager):
-          NONE → SECURING : ARES detects a rush (latched by _rush_reacted)
-          SECURING → DEFENDING : 2-queen defense floor met (incl. pending)
-          DEFENDING → NONE : RUSH_CLEAR_GRACE seconds without enemy
-                             combat units near our bases (latches
-                             _rush_over — ARES's flag is permanent)
+        Transitions (one-way):
+            NONE -> SECURING : rush detected (_rush_reacted latched)
+            SECURING -> DEFENDING : 2-queen floor met (incl. pending)
+            DEFENDING -> NONE : RUSH_CLEAR_GRACE seconds with no enemy
+                combat units near our bases; latches _rush_over
         """
         ai = self._ai
 
-        # Terminal: cleared rushes never re-trigger from the raw flag
+        # Cleared rushes never re-trigger — the ARES flag is permanent
         if self._rush_over:
             return
 
-        # Track near-base threats for the clear condition (also feeds
-        # DefenseManager-style presence checks without a second scan)
         if self._enemy_combat_near_bases():
             self._last_threat_near_base_time = ai.time
 
-        # NONE → SECURING: rush just detected
         if self._rush_state is RushState.NONE:
             if self._rush_reacted:
                 self._rush_state = RushState.SECURING
 
-        # SECURING → DEFENDING: defense queens secured
         elif self._rush_state is RushState.SECURING:
             if self._defense_queens_secured():
                 self._rush_state = RushState.DEFENDING
                 logger.info(
                     f"{ai.time_formatted}: Defense queens secured — "
-                    f"rush defense profile active (lings + capped drones)"
+                    f"rush defense profile active (lings + surplus drones)"
                 )
 
-        # DEFENDING → NONE: grace window with no enemies near bases
         elif self._rush_state is RushState.DEFENDING:
             if (
                 ai.time - self._last_threat_near_base_time >= RUSH_CLEAR_GRACE
@@ -344,7 +301,7 @@ class MacroManager:
                 self._rush_state = RushState.NONE
                 self._rush_over = True
                 logger.info(
-                    f"{ai.time_formatted}: Rush cleared — returning to " f"normal macro"
+                    f"{ai.time_formatted}: Rush cleared — returning to normal macro"
                 )
 
     def _defense_queens_secured(self) -> bool:
@@ -358,12 +315,10 @@ class MacroManager:
     def _enemy_combat_near_bases(self) -> bool:
         """True if enemy combat units are near any of our townhalls.
 
-        The rush-clear condition: reuses ARES's near-base enemy tracking
-        (ground + flying, per-townhall tag sets) exactly like
-        DefenseManager._collect_threats, dropping harmless types so
-        overlords/scouts don't count as "enemies around".
+        Uses ARES near-base tracking (ground + flying) with harmless types
+        (scouts, observers) filtered out.
 
-        Perf note: O(tracked tags) set-union + one tags_in lookup.
+        Perf: O(tracked) set union + one tags_in lookup.
         """
         ai = self._ai
         ground: dict[int, set[int]] = ai.mediator.get_ground_enemy_near_bases
@@ -379,88 +334,106 @@ class MacroManager:
         return bool(threats.filter(lambda u: u.type_id not in HARMLESS_THREAT_TYPES))
 
     def _rush_state_securing(self) -> bool:
-        """Consumer read: hold all tech/unit/expansion spends this frame."""
+        """Consumer read: SECURING state — hold all non-queen spends."""
         return self._rush_state is RushState.SECURING
 
     def _rush_active(self) -> bool:
-        """Consumer read: the rush defense profile is active this frame.
-
-        True during SECURING and DEFENDING — the entire rush response.
-        Gates the rush comp, worker cap, and defense-tech holds.
-        """
+        """Consumer read: rush defense profile active (SECURING or DEFENDING)."""
         return self._rush_state is not RushState.NONE
 
     # ── Macro Plan ──────────────────────────────────────────────────────────
 
     def _do_macro_plan(self) -> None:
-        """Build the main MacroPlan: supply, workers, gas, tech, spawning, expand.
+        """Build the main MacroPlan: supply, tech, army, workers, upgrades.
 
-        MacroPlan.execute() short-circuits on the first behavior returning
-        True — only ONE macro action runs per frame. Ordering therefore
-        encodes priority: supply → workers → gas → TECH → army → upgrades
-        → expansions. Tech (Roach Warren) must precede SpawnController so
-        it can never be starved by constant ling/roach spending.
+        MacroPlan executes ONE behavior per frame (short-circuits on first
+        True), so add order is priority order:
+        supply -> tech -> ARMY -> workers -> upgrades -> expansions.
+
+        Ladder design (gate-free):
+        - The army runs ABOVE workers. SpawnController (affordable-first)
+          claims the frame whenever the comp is affordable and tech-ready,
+          and declines those frames when it is not. Those declined frames
+          fall through to BuildWorkers — "army alongside drones" emerges
+          from affordability, not from a tie-breaker gate.
+        - The drone ceiling is infrastructure-derived: min(80, bases x 22).
+          Halting expansions (rush states, enemies near bases) freezes
+          the ceiling — drones self-constrain with zero drone logic.
+        - Pre-pool or pool-sniped: no tech-ready units exist, so every
+          frame falls through to drones — a pure drone phase with no gate.
+
+        RECOVERY state (post-threat economy rebuild):
+        - Entry (all derived, no new thresholds): bases unsaturated
+          (workers < EXPANSION_SATURATION_THRESHOLD x ceiling — the same
+          concept that gates expansion) AND not under attack
+          (DefenseManager flag) AND no rush response active.
+        - Effect: the workers rung moves ABOVE army — every larva
+          rebuilds the economy — and ALL investment halts (tech,
+          upgrades, gas, expansions, proactive + reactive tech). The
+          queen floor raises to 4 (2 x RUSH_DEFENSE_QUEENS, also the
+          QueenManager inject-activation threshold): a larva-free
+          standing defense that absorbs follow-ups until the
+          under_attack flip restores army-first order.
+        - Exit: saturation reached OR under_attack flips — no latches
+          that could contradict the rush states.
+
+        Rush holds:
+        - SECURING: everything except queens/supply/spines is held so the
+          150m queen bank is never sniped (a queen costs 150m; drones,
+          warren, gas, and expansion all cost less and would drain it).
+        - DEFENDING (rush_active): ling-only profile — rush comp, frozen
+          gas/expansions, held tech and upgrades. Lings are always
+          affordable so the ladder gives defense priority emergently. The
+          Spawning Pool is rebuilt first-class (the Warren TechUp that
+          would normally chain it is itself held).
         """
         macro_plan: MacroPlan = MacroPlan()
         structure_dict: dict = self._ai.mediator.get_own_structures_dict
 
-        # Supply
         macro_plan.add(AutoSupply(base_location=self._ai.start_location))
 
-        # Rush SECURING: hold ALL other macro spends — every one of them
-        # (drones 50m, army units, warren 150m, gas 75m, expansion 300m)
-        # would snipe the 150m queen bank before the defense queens can
-        # train. Queens go first; AutoSupply above keeps supply flowing so
-        # the queen is never blocked. Spines stay active via
-        # _respond_to_threats (run in update() regardless).
         rush_securing: bool = self._rush_state_securing()
-        # Rush DEFENDING (rush_active incl. SECURING): rush defense profile —
-        # lings + capped drones only. No tech, no gas expansion, no upgrades,
-        # no new bases until the rush clears.
         rush_active: bool = self._rush_active()
 
-        # Workers — produce enough to saturate all existing + pending bases
-        # Below WORKER_PRIORITY_THRESHOLD: always drone (standard opening).
-        # Above it: drone only when the mineral bank is high enough that
-        # workers don't compete with army larvae. The old `idle_townhalls`
-        # gate was useless for Zerg — hatcheries are idle almost every
-        # frame (only Queen training / morphs occupy them), so drones
-        # monopolized larvae up to the 66+ target while army starved.
+        # RECOVERY state — derived only from existing concepts: the
+        # saturation fraction that gates expansion, DefenseManager's
+        # hysteresis'd under_attack flag (same read combat.py uses), and
+        # the rush states. Stored so _queen_target / _expansion_targets /
+        # _respond_to_threats read the same-frame value.
+        defense_mgr = getattr(self._ai, "_defense_mgr", None)
+        under_attack: bool = defense_mgr is not None and defense_mgr.under_attack
         total_bases: int = len(self._ai.townhalls.ready) + self._ai.structure_pending(
             self._ai.base_townhall_type
         )
-        max_workers: int = min(80, total_bases * DRONES_PER_FULLY_SATURATED_BASE)
-        if rush_active:
-            max_workers = min(max_workers, RUSH_WORKER_CAP)
-        need_workers: bool = (
-            self._ai.supply_workers < WORKER_PRIORITY_THRESHOLD
-            or self._ai.minerals >= DRONE_BANK_MINERALS
-        ) and not rush_securing
-        if need_workers:
-            macro_plan.add(BuildWorkers(to_count=max_workers))
-
-        # Gas — phased based on drone count and base count
-        target_gas, max_pending_gas = self._gas_targets()
-        macro_plan.add(
-            GasBuildingController(
-                to_count=target_gas,
-                max_pending=max_pending_gas,
-            )
+        worker_ceiling: int = min(
+            DRONE_HARD_CAP, total_bases * DRONES_PER_FULLY_SATURATED_BASE
         )
+        self._recovering: bool = (
+            not rush_active
+            and not under_attack
+            and self._ai.supply_workers
+            < EXPANSION_SATURATION_THRESHOLD * worker_ceiling
+        )
+        # Investment (tech/upgrades/gas/expansion) only on a standing
+        # economy: rush defense and recovery both claim the whole bank
+        # for units and drones instead.
+        invest_allowed: bool = not rush_active and not self._recovering
 
-        # Tech — Roach Warren BEFORE army spawning.
-        # Roach Warren: roaches are priority-1 in every composition, and the
-        # safety-roach rush defense depends on them. Covers games where the
-        # opening build aborted before the scripted `18 roachwarren` step,
-        # plus mid-game warren snipes. Must precede SpawnController in the
-        # plan: MacroPlan short-circuits, and with the Warren missing the
-        # SpawnController over-produces lings (its only tech-ready unit)
-        # every single frame — TechUp never got a look in. TechUp
-        # self-guards: skips if the warren is present/pending, chains a
-        # Spawning Pool if missing, returns True only on the queue frame.
-        # Held while rush_active — the rush comp is pure lings; the Warren
-        # (150m) would drain the ling army every frame it retries.
-        if not rush_active:
+        # Gas (frozen during rush — see _gas_targets; held during recovery)
+        if invest_allowed:
+            target_gas, max_pending_gas = self._gas_targets()
+            macro_plan.add(
+                GasBuildingController(
+                    to_count=target_gas,
+                    max_pending=max_pending_gas,
+                )
+            )
+
+        # Roach Warren — must precede army so SpawnController never starves
+        # on missing tech. Held during rush and recovery (investment):
+        # the rush comp needs no warren, and its 150m retries would drain
+        # the defense or the drone rebuild.
+        if invest_allowed:
             macro_plan.add(
                 TechUp(
                     desired_tech=UnitID.ROACHWARREN,
@@ -468,11 +441,8 @@ class MacroManager:
                 )
             )
 
-        # Rush DEFENDING: Spawning Pool is the linchpin of the defense
-        # (lings). Rebuild it first-class if the rush killed it — the
-        # warren TechUp's chained pool rebuild is held above, so without
-        # this a dead pool means no ling production for the rest of the
-        # rush. Held during SECURING (queens still go first).
+        # Rush DEFENDING: rebuild the pool first-class if lost — without it
+        # there is no ling production for the rest of the rush
         if (
             rush_active
             and not rush_securing
@@ -486,12 +456,12 @@ class MacroManager:
                 )
             )
 
-        # Lair — held while rush_active (defense spends nothing on tech)
+        # Lair / Hive — held during rush and recovery (investment)
         lair_tech: bool = (
             len(structure_dict[UnitID.LAIR]) > 0 or len(structure_dict[UnitID.HIVE]) > 0
         )
         if (
-            not rush_active
+            invest_allowed
             and self._ai.vespene >= 100
             and not lair_tech
             and len(self._ai.mediator.get_own_army_dict[UnitID.QUEEN]) >= 4
@@ -500,9 +470,8 @@ class MacroManager:
                 TechUp(desired_tech=UnitID.LAIR, base_location=self._ai.start_location)
             )
 
-        # Hive at high supply — held while rush_active (same reason)
         if (
-            not rush_active
+            invest_allowed
             and self._ai.supply_used > 170.0
             and len(structure_dict.get(UnitID.HIVE, [])) == 0
         ):
@@ -510,13 +479,11 @@ class MacroManager:
                 TechUp(desired_tech=UnitID.HIVE, base_location=self._ai.start_location)
             )
 
-        # Spawning — use composition from compositions.py
-        # Strip morph units (Ravager, Baneling) from SpawnController because
-        # it can't morph combat units (they're never idle). Morphing is
-        # handled separately in _morph_units_standalone() which runs every
-        # frame, even during the build order.
-        # Rush active: rush comp (pure lings). Held during SECURING —
-        # army larvae and minerals go to queens first.
+        # ARMY + WORKERS — one claimant per frame; the order flips with
+        # the economy state. Morph units stripped from the army comp
+        # (SpawnController can't morph combat units;
+        # _morph_units_standalone handles those). SECURING holds both so
+        # minerals reach the queens first.
         if not rush_securing:
             full_army_comp: dict[UnitID, dict] = get_army_comp(
                 self._ai.time,
@@ -526,32 +493,40 @@ class MacroManager:
             )
             army_comp: dict[UnitID, dict] = strip_morph_units(full_army_comp)
             freeflow: bool = self._ai.supply_workers >= FREEFLOW_DRONE_THRESHOLD
-            # Non-freeflow SpawnController hard-breaks on its highest
-            # priority unit being unaffordable. Reorder so an affordable
-            # unit leads — prevents total army stall when Roach gas runs
-            # dry (Roach 75/25, Ling 50/0).
             if not freeflow:
+                # SpawnController hard-breaks on an unaffordable priority-1
+                # unit; lead with an affordable one to avoid total stalls
                 army_comp = prioritize_affordable_units(
                     army_comp, self._ai.minerals, self._ai.vespene
                 )
-            macro_plan.add(SpawnController(army_comp, freeflow_mode=freeflow))
+            army_behavior: SpawnController = SpawnController(
+                army_comp, freeflow_mode=freeflow
+            )
+            worker_behavior: BuildWorkers = BuildWorkers(to_count=worker_ceiling)
+            if self._recovering:
+                # RECOVERY: every larva rebuilds the economy; the army
+                # gets only the frames workers decline. Defense during
+                # the window rides the raised queen floor + spines, and
+                # an under_attack flip restores army-first instantly.
+                macro_plan.add(worker_behavior)
+                macro_plan.add(army_behavior)
+            else:
+                # Normal: army above workers — drones take only the
+                # frames the army declines (gate-free arbitration).
+                macro_plan.add(army_behavior)
+                macro_plan.add(worker_behavior)
 
-        # Proactive tech buildings — built when economy supports them.
-        # Held while rush_active (Baneling Nest costs 100m — would drain
-        # the ling army).
-        if not rush_active:
+        if invest_allowed:
             self._build_proactive_tech()
 
-        # Queen production — target = ready bases + 1
-        # Uses direct train() instead of SpawnController because queens
-        # need a count-based target (not proportion-based), and they're
-        # trained from Hatch/Lair/Hive (not larvae).
+        # Queens — train() directly, not plan-ordered: they must claim the
+        # bank every frame regardless of what the plan short-circuits on
         self._produce_queens()
 
-        # Upgrades — only when we have gas to spare. Held while rush_active:
-        # UpgradeController auto-builds required tech (e.g. Evolution
-        # Chamber), which must not drain the ling army.
-        if self._upgrades_enabled and not rush_active:
+        # Upgrades — held during rush and recovery (UpgradeController
+        # auto-builds required tech, e.g. Evolution Chamber, which would
+        # drain the defense or the drone rebuild)
+        if self._upgrades_enabled and invest_allowed:
             macro_plan.add(
                 UpgradeController(
                     upgrade_list=self._required_upgrades,
@@ -559,7 +534,7 @@ class MacroManager:
                 )
             )
 
-        # Expansions — gated on saturation + rush state
+        # Expansions (gated in _expansion_targets)
         target_bases, max_pending = self._expansion_targets()
         macro_plan.add(
             ExpansionController(to_count=target_bases, max_pending=max_pending)
@@ -572,20 +547,15 @@ class MacroManager:
     def _gas_targets(self) -> tuple[int, int]:
         """Determine target gas count and max pending geysers.
 
-        Scales gas with base count and economy maturity. Under heavy
-        rush pressure, delay extra gas to prioritize army units.
-
-        Returns:
+        Scales with drone count via GAS_PHASES. During the rush response,
+        gas is frozen at its current count — the defense (lings, drones,
+        queens) needs none. Returns:
             (target_gas, max_pending) tuple for GasBuildingController.
         """
         ai = self._ai
         drone_count: int = ai.supply_workers
         base_count: int = len(ai.townhalls.ready)
 
-        # Rush active (SECURING + DEFENDING): freeze EXTRA gas at its current
-        # count — the rush defense (lings, drones, queens) needs no gas.
-        # (Gas the opening build already started is kept, never canceled.)
-        # Once the rush clears, normal gas phases resume so roaches flow.
         if self._rush_active():
             return (len(ai.gas_buildings), 0)
 
@@ -611,74 +581,65 @@ class MacroManager:
     # ── Queen Production Logic ─────────────────────────────────────────────
 
     def _queen_target(self) -> int:
-        """Determine target queen count: ready bases + 1 extra.
+        """Target queen count (incl. pending).
 
-        Under rush pressure the queen floor is RUSH_DEFENSE_QUEENS:
-        two queens are the backbone of the defense (transfuse + DPS),
-        so never target fewer — even with a single base.
-        Without a rush, target is bases + 1.
-
-        Returns:
-            Target number of queens we want to have (including pending).
+        Normal: ready bases + 1. During the rush response: never fewer
+        than RUSH_DEFENSE_QUEENS — two queens are the defense backbone
+        (transfuse + DPS), even with a single base.
         """
         ai = self._ai
         base_count: int = len(ai.townhalls.ready)
 
-        # No bases = no queens
         if base_count == 0:
             return 0
 
-        # Rush response active (SECURING or DEFENDING): defense queen
-        # floor — never target fewer than 2, even with a single base
         if self._rush_state is not RushState.NONE:
             return max(RUSH_DEFENSE_QUEENS, base_count)
+
+        # RECOVERY: 4 queens — 2 x RUSH_DEFENSE_QUEENS, and also the
+        # QueenManager inject-activation threshold. A larva-free standing
+        # defense for the rebuild window PLUS restored inject throughput;
+        # recovery defense comes from queens, never pulled drones.
+        if self._recovering:
+            return max(2 * RUSH_DEFENSE_QUEENS, base_count)
 
         return base_count + 1
 
     def _produce_queens(self) -> None:
-        """Train a queen from an idle Hatch/Lair/Hive if we need more.
+        """Train one queen per frame from an idle townhall if below target.
 
-        Queens are trained from townhalls (not larvae), so we use
-        direct train() instead of SpawnController. Only trains one
-        queen per frame to avoid blocking larvae production on
-        other townhalls.
+        Direct train() rather than SpawnController: queens need a
+        count-based target and train from the townhall build queue,
+        not larvae.
 
-        Perf note: O(townhalls) to find idle one, typically 2-4.
+        Perf: O(townhalls), typically 2-4.
         """
         ai = self._ai
 
-        # Check if we need more queens
         current_queens: int = len(ai.mediator.get_own_army_dict[UnitID.QUEEN])
         pending_queens: int = cy_unit_pending(ai, UnitID.QUEEN)
-        total_queens: int = current_queens + pending_queens
         target: int = self._queen_target()
 
-        if total_queens >= target or target == 0:
+        if current_queens + pending_queens >= target or target == 0:
             return
 
-        # Find an idle Hatch/Lair/Hive to train from
-        # Queens cost 150 minerals, 0 gas, 2 supply
         if not ai.can_afford(UnitID.QUEEN):
             return
 
         for th in ai.townhalls.ready:
             if th.is_idle:
                 th.train(UnitID.QUEEN)
-                return  # Only one per frame
+                return
 
     # ── Morph Units ──────────────────────────────────────────────────────────
 
     def _morph_units_standalone(self) -> None:
-        """Entry point for morph logic — runs every frame, even during build order.
+        """Morph entry point — runs every frame, including during the
+        opening build order (SpawnController can't morph combat units).
 
-        Computes army counts and composition, then delegates to _morph_units.
-        This must run before the build-runner return so morphing continues
-        during the opening build order. Held during rush until the queen
-        floor is met — morphs drain minerals/gas the queens need.
+        Held during SECURING: morphs would drain the queen bank.
         """
         ai = self._ai
-        # Rush SECURING: hold morphs — they'd drain the queen bank.
-        # DEFENDING: morphs flow (banes are prime anti-ling defense).
         if self._rush_state_securing():
             return
         army_dict: dict[UnitID, Units] = ai.mediator.get_own_army_dict
@@ -712,25 +673,22 @@ class MacroManager:
         3. We can afford the morph cost
         4. The prerequisite building exists (Baneling Nest, Lair/Hive)
 
-        Perf note: O(base_units) per morph type, typically <30 units.
+        Perf: O(base_units) per morph type, typically <30 units.
         """
         ai = self._ai
         structure_dict: dict = ai.mediator.get_own_structures_dict
 
         # ── Ravagers: Roach → Ravager ───────────────────────────────────
         if should_morph(UnitID.RAVAGER, army_counts, full_comp):
-            # Need Lair or Hive tech
             has_lair: bool = (
                 len(structure_dict.get(UnitID.LAIR, [])) > 0
                 or len(structure_dict.get(UnitID.HIVE, [])) > 0
             )
             if has_lair and ai.can_afford(UnitID.RAVAGER):
-                # Count morphing/pending ravagers to avoid over-morphing
                 pending_ravagers: int = cy_unit_pending(ai, UnitID.RAVAGER)
                 current_ravagers: int = army_counts.get(UnitID.RAVAGER, 0)
                 total_ravagers: int = current_ravagers + pending_ravagers
 
-                # Calculate how many more we need
                 comp_types: set[UnitID] = set(full_comp.keys())
                 total_comp: int = sum(army_counts.get(uid, 0) for uid in comp_types)
                 target_prop: float = full_comp[UnitID.RAVAGER]["proportion"]
@@ -747,7 +705,6 @@ class MacroManager:
 
         # ── Banelings: Zergling → Baneling ──────────────────────────────
         if should_morph(UnitID.BANELING, army_counts, full_comp):
-            # Need Baneling Nest
             has_bane_nest: bool = len(structure_dict.get(UnitID.BANELINGNEST, [])) > 0
             if has_bane_nest and ai.can_afford(UnitID.BANELING):
                 pending_banelings: int = cy_unit_pending(ai, UnitID.BANELING)
@@ -773,17 +730,13 @@ class MacroManager:
     def _bases_saturated(
         self, threshold: float = EXPANSION_SATURATION_THRESHOLD
     ) -> bool:
-        """Check if all existing (ready) bases are saturated enough to expand.
-
-        A base is considered saturated at `threshold * DRONES_PER_SATURATED_BASE`
-        drones. Default 0.85 means ~17/20 drones per base. Pending bases are
-        excluded — we want existing bases saturated before taking more.
+        """True if every ready base has at least `threshold` fraction of
+        full saturation (drones per base >= threshold * DRONES_PER_SATURATED_BASE).
+        Pending bases are excluded — existing bases must be saturated
+        before taking more.
 
         Args:
-            threshold: Fraction of full saturation required (0.0–1.0).
-
-        Returns:
-            True if every ready base has enough drones.
+            threshold: Fraction of full saturation required (0.0-1.0).
         """
         ai = self._ai
         ready_bases: int = len(ai.townhalls.ready)
@@ -795,11 +748,10 @@ class MacroManager:
     def _expansion_targets(self) -> tuple[int, int]:
         """Determine target base count and max pending expansions.
 
-        Follows the examples' pattern (Clicadinha / PiGBot): no hardcoded
-        phase table — ExpansionController targets all bases and the real
-        gates are saturation and pending caps, which self-limit to one
-        expansion at a time. Held entirely during SECURING (300m must
-        never snipe the queen bank) and while enemies are near bases.
+        Gates, in order: rush response (no expansion spend), enemies near
+        bases, one-at-a-time pending cap, existing-base saturation. When
+        all gates pass, expansions are unlimited — saturation and the
+        pending cap are the self-limiters.
 
         Returns:
             (target_bases, max_pending) tuple for ExpansionController.
@@ -808,23 +760,22 @@ class MacroManager:
         ready_bases: int = len(ai.townhalls.ready)
         pending_bases: int = ai.structure_pending(ai.base_townhall_type)
 
-        # Rush active: no expansion spend — the bank goes to the defense
         if self._rush_active():
             return (ready_bases, 0)
 
-        # Enemies currently near our bases: don't start a new base
+        # RECOVERY: no expansion spend — the bank goes to the drone rebuild
+        if self._recovering:
+            return (ready_bases, 0)
+
         if self._enemy_combat_near_bases():
             return (ready_bases, 0)
 
-        # One expansion at a time, always
         if pending_bases >= 1:
             return (ready_bases + pending_bases, 1)
 
-        # Existing bases must be saturated before taking more
         if not self._bases_saturated():
             return (ready_bases, 0)
 
-        # Expand freely — saturation + pending cap are the only gates
         return (99, 1)
 
     # ── Upgrades ────────────────────────────────────────────────────────────
@@ -904,7 +855,7 @@ class MacroManager:
     # ── Threat Assessment ──────────────────────────────────────────────────
 
     def _assess_threats(self) -> None:
-        """Detect common threats and update internal threat dict."""
+        """Detect common threats and update the threat dict (rebuilt per frame)."""
         self._threats = {
             "no_natural": False,
             "timing_push": False,
@@ -917,12 +868,12 @@ class MacroManager:
 
         ai = self._ai
 
-        # Rush: mirror the state machine (NOT the raw ARES flag — that one
-        # latches permanently and would resurrect the threat after clear)
+        # Mirror the state machine, not the raw ARES flag — that one is
+        # permanent and would resurrect the threat after a clear
         if self._rush_state is not RushState.NONE:
             self._threats["rush_detected"] = True
 
-        # No natural at 3:30
+        # No enemy natural by 3:30
         if ai.time > NATURAL_TIMING_THRESHOLD:
             enemy_naturals: list = [
                 th
@@ -933,11 +884,8 @@ class MacroManager:
             if not enemy_naturals:
                 self._threats["no_natural"] = True
 
-        # Air signs: enemy air tech structures OR any air unit we've seen
-        # Include memory units — if we ever saw a Void Ray, that threat
-        # persists even if we lose vision of it.
-        # This is a latching flag: once detected, stays True for the rest
-        # of the game. You don't un-see air tech.
+        # Air signs: latching — air tech once seen is never un-seen.
+        # Memory units count: vision loss doesn't dismiss a Void Ray.
         if not self._air_signs_detected:
             for structure in ai.enemy_structures:
                 if structure.type_id in AIR_STRUCTURES:
@@ -950,7 +898,7 @@ class MacroManager:
                     break
         self._threats["air_signs"] = self._air_signs_detected
 
-        # Proxy signs
+        # Enemy structures close to our start
         for structure in ai.enemy_structures:
             if (
                 structure.distance_to(ai.start_location) < 80
@@ -968,7 +916,7 @@ class MacroManager:
         if light_count >= 10:
             self._threats["mass_light"] = True
 
-        # Cannon rush
+        # Forge / Photon Cannon close to our start
         for structure in ai.enemy_structures:
             if structure.distance_to(ai.start_location) < 60:
                 if structure.type_id in {UnitID.FORGE, UnitID.PHOTONCANNON}:
@@ -978,23 +926,23 @@ class MacroManager:
     # ── Threat Responses ────────────────────────────────────────────────────
 
     def _respond_to_threats(self) -> None:
-        """Execute minimal responses for active threats.
+        """Execute responses for active threats.
 
-        Reactive tech (Baneling Nest, Hydra Den) is held during SECURING —
-        it competes with queens for the mineral bank. Spines are
-        intentionally never held: they are the threat response itself.
+        Reactive tech competes with the rush defense for the mineral bank
+        and is held while SECURING. Spines are never held — they ARE the
+        threat response.
         """
         if not any(self._threats.values()):
             return
 
         ai = self._ai
-        tech_held: bool = self._rush_state_securing()
+        # Reactive tech is investment too: held while SECURING and during
+        # RECOVERY (the rebuild owns the bank). Spines are never held.
+        tech_held: bool = self._rush_state_securing() or self._recovering
 
-        # No natural: spines + safety roaches
         if self._threats["no_natural"]:
             self._build_emergency_spines(count=EMERGENCY_SPINE_COUNT)
 
-        # Air signs: hydra den + mineral line spines
         if self._threats["air_signs"]:
             if (
                 not tech_held
@@ -1005,11 +953,9 @@ class MacroManager:
                 ai.build(UnitID.HYDRALISKDEN, near=ai.start_location)
             self._build_mineral_line_spines(count=MINERAL_LINE_SPINE_COUNT)
 
-        # Proxy signs: spine + safety roaches
         if self._threats["proxy_signs"]:
             self._build_emergency_spines(count=1)
 
-        # Mass light: bane nest
         if self._threats["mass_light"] and not tech_held:
             if (
                 not ai.structures(UnitID.BANELINGNEST).exists
@@ -1018,7 +964,6 @@ class MacroManager:
             ):
                 ai.build(UnitID.BANELINGNEST, near=ai.start_location)
 
-        # Cannon rush: spine
         if self._threats["cannon_rush"]:
             self._build_emergency_spines(count=1)
 
